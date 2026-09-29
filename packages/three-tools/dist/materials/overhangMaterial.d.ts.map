@@ -1,0 +1,1 @@
+{"version":3,"file":"overhangMaterial.d.ts","sourceRoot":"","sources":["../../src/materials/overhangMaterial.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,KAAK,MAAM,OAAO,CAAC;AAE/B;;;;;;;;GAQG;AACH,wBAAgB,gCAAgC,CAAC,OAAO,CAAC,EAAE;IACzD,YAAY,CAAC,EAAE,MAAM,CAAC;IACtB,SAAS,CAAC,EAAE,OAAO,CAAC;CACrB,GAAG,KAAK,CAAC,cAAc,CA2EvB"}

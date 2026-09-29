@@ -1,0 +1,19 @@
+{
+  "name": "outlaw-forge-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/web",
+    "dev:all": "pwsh -File scripts/dev.ps1",
+    "build": "npm run build --workspace=apps/web",
+    "test": "npm run test:backend && npm run test:frontend",
+    "test:backend": "python -m pytest apps/api/tests",
+    "test:frontend": "npm run test --workspace=apps/web --if-present",
+    "test:smoke": "python tests/verify_health.py",
+    "lint": "npm run lint --workspace=apps/web"
+  }
+}

@@ -1,0 +1,16 @@
+node_modules
+
+# Build and test caches
+.next/
+**/.pytest_cache/
+**/__pycache__/
+
+# Local runtime data and generated mesh artifacts
+data/outlaw_forge.db
+apps/data/outlaw_forge.db
+data/original/
+data/working/
+data/exports/
+apps/data/original/
+apps/data/working/
+apps/data/exports/

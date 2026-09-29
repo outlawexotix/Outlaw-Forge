@@ -1,0 +1,18 @@
+{
+  "name": "@outlaw-forge/three-tools",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "three": "^0.160.0",
+    "three-stdlib": "^2.29.4"
+  },
+  "devDependencies": {
+    "@types/three": "^0.160.0",
+    "typescript": "^5.7.3"
+  }
+}
