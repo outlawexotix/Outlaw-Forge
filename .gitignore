@@ -1,9 +1,39 @@
-node_modules
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
 
-# Build and test caches
-.next/
-**/.pytest_cache/
+# Logs
+*.log
+
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+
+# Python and frontend caches/build outputs
 **/__pycache__/
+.pytest_cache/
+**/.pytest_cache/
+.next/
+build/
+*.egg-info/
+apps/web/tsconfig.tsbuildinfo
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# CAD software temporary files
+*.~*
+*.tmp
+
+# OS
+Thumbs.db
 
 # Local runtime data and generated mesh artifacts
 data/outlaw_forge.db
