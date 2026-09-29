@@ -10,7 +10,11 @@ import {
   ScaleModelPayload, 
   RotateModelPayload,
   ExportModelPayload,
-  OverhangAnalysis
+  OverhangAnalysis,
+  SliceModelPayload,
+  SliceModelResult,
+  RepairModelPayload,
+  RepairModelResult
 } from "@shared/types/api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -214,6 +218,38 @@ export class ApiClient {
       cache: "no-store",
     });
     if (!res.ok) throw new Error(`Failed to get overhang analysis: ${res.statusText}`);
+    return res.json();
+  }
+
+  /**
+   * Slice working model along planar cut
+   */
+  async sliceModel(projectId: string, modelId: string, payload: SliceModelPayload): Promise<SliceModelResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/slice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to slice model");
+    }
+    return res.json();
+  }
+
+  /**
+   * Run automated mesh repair and healing
+   */
+  async repairModel(projectId: string, modelId: string, payload?: RepairModelPayload): Promise<RepairModelResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/repair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to repair mesh");
+    }
     return res.json();
   }
 

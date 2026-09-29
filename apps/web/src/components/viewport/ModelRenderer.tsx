@@ -252,7 +252,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
       isCancelled = true;
       abortControllerRef.current?.abort();
     };
-  }, [model?.id, model?.updated_at, modelBuffer, modelUrl, bedWidth, bedDepth, onModelLoaded, onError]);
+  }, [model?.id, model?.updated_at, model?.filename, model?.transform?.uniform_scale_percent, modelBuffer, modelUrl, bedWidth, bedDepth, onModelLoaded, onError]);
 
   // Overhang Inspection Material (Amber/Red highlight for downward faces > 45 deg)
   const overhangMaterial = useMemo(() => {
@@ -306,7 +306,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
         modelGroupRef.current.scale.set(...initialScl);
       }
     }
-  }, [model?.id, bedWidth, bedDepth]);
+  }, [model?.id, model?.transform?.position_mm, model?.transform?.rotation_deg, model?.transform?.scale_factors, bedWidth, bedDepth]);
 
   // Live transform event handling while user drags gizmo
   const handleTransformChange = useCallback(() => {

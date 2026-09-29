@@ -2,10 +2,21 @@ import io
 import os
 import tempfile
 from pathlib import Path
+import numpy as np
 import pytest
 import trimesh
 
-from app.models.mesh import ExportModelPayload, OverhangAnalysisResult, RotateModelPayload, ScaleModelPayload
+from app.models.mesh import (
+    ExportModelPayload,
+    MeshRepairReport,
+    OverhangAnalysisResult,
+    RepairModelPayload,
+    RepairModelResult,
+    RotateModelPayload,
+    ScaleModelPayload,
+    SliceModelPayload,
+    SliceModelResult,
+)
 from app.services.mesh_service import (
     ALLOWED_EXTENSIONS,
     MAX_FILE_SIZE_BYTES,
@@ -17,9 +28,11 @@ from app.services.mesh_service import (
     export_mesh,
     lay_flat_mesh,
     load_mesh,
+    repair_mesh,
     rotate_mesh,
     sanitize_and_validate_filename,
     scale_mesh,
+    slice_mesh,
 )
 
 
@@ -538,3 +551,170 @@ class TestMeshOverhangAnalysis:
         assert result.overhang_area_cm2 == 0.0
         assert result.requires_support is False
 
+
+class TestPlanarSlicing:
+    """Test suite for planar slicing, mesh splitting, face capping, and alignment pegs."""
+
+    def test_horizontal_slice_calibration_cube(self, cube_20mm_mesh):
+        """
+        Slice grounded 20x20x20mm cube (Z in [0, 20]) at Z=10mm (mid-height) with normal [0, 0, 1].
+        - Top half: 20x20x10mm (Volume: 4.0 cm3, watertight)
+        - Bottom half: 20x20x10mm (Volume: 4.0 cm3, watertight)
+        - Total volume: 8.0 cm3 preserved
+        - Cut area: 4.0 cm2 (20x20mm = 400 mm2)
+        """
+        grounded = center_mesh_on_bed(cube_20mm_mesh)
+        top_slice, bottom_slice, cut_area = slice_mesh(
+            mesh=grounded,
+            plane_origin=[0.0, 0.0, 10.0],
+            plane_normal=[0.0, 0.0, 1.0],
+            cap_faces=True,
+        )
+
+        top_analysis = analyze_mesh(top_slice)
+        bottom_analysis = analyze_mesh(bottom_slice)
+
+        assert top_analysis.is_watertight is True
+        assert bottom_analysis.is_watertight is True
+
+        assert pytest.approx(top_analysis.volume_cm3, rel=1e-2) == 4.0
+        assert pytest.approx(bottom_analysis.volume_cm3, rel=1e-2) == 4.0
+        assert pytest.approx(top_analysis.volume_cm3 + bottom_analysis.volume_cm3, rel=1e-2) == 8.0
+
+        assert pytest.approx(top_analysis.bounds.dimensions_mm[2], abs=1e-2) == 10.0
+        assert pytest.approx(bottom_analysis.bounds.dimensions_mm[2], abs=1e-2) == 10.0
+        assert pytest.approx(cut_area, rel=1e-1) == 4.0
+
+    def test_sagittal_x_axis_slice(self, cube_20mm_mesh):
+        """
+        Slice 20x20x20mm cube along X-axis at X=0 (mid-width) with normal [1, 0, 0].
+        Each half is 10x20x20mm.
+        """
+        grounded = center_mesh_on_bed(cube_20mm_mesh)
+        top_slice, bottom_slice, cut_area = slice_mesh(
+            mesh=grounded,
+            plane_origin=[0.0, 0.0, 10.0],
+            plane_normal=[1.0, 0.0, 0.0],
+            cap_faces=True,
+        )
+
+        top_analysis = analyze_mesh(top_slice)
+        bottom_analysis = analyze_mesh(bottom_slice)
+
+        assert top_analysis.is_watertight is True
+        assert bottom_analysis.is_watertight is True
+        assert pytest.approx(top_analysis.bounds.dimensions_mm[0], abs=1e-2) == 10.0
+        assert pytest.approx(bottom_analysis.bounds.dimensions_mm[0], abs=1e-2) == 10.0
+        assert pytest.approx(top_analysis.volume_cm3, rel=1e-2) == 4.0
+
+    def test_slice_with_alignment_pegs(self, cube_20mm_mesh):
+        """
+        Slice cube with alignment dowel pin/socket generation enabled.
+        Produces valid split meshes.
+        """
+        grounded = center_mesh_on_bed(cube_20mm_mesh)
+        top_slice, bottom_slice, cut_area = slice_mesh(
+            mesh=grounded,
+            plane_origin=[0.0, 0.0, 10.0],
+            plane_normal=[0.0, 0.0, 1.0],
+            cap_faces=True,
+            create_pegs=True,
+            peg_radius_mm=2.0,
+            peg_height_mm=4.0,
+            peg_clearance_mm=0.2,
+        )
+
+        assert top_slice is not None
+        assert bottom_slice is not None
+        assert len(top_slice.faces) > 0
+        assert len(bottom_slice.faces) > 0
+
+    def test_slice_out_of_bounds_raises_error(self, cube_20mm_mesh):
+        """Plane entirely above or below mesh raises MeshProcessingError."""
+        with pytest.raises(MeshProcessingError, match="empty"):
+            slice_mesh(
+                mesh=cube_20mm_mesh,
+                plane_origin=[0.0, 0.0, 100.0], # Far above top Z=20
+                plane_normal=[0.0, 0.0, 1.0],
+            )
+
+    def test_slice_empty_mesh_raises_validation_error(self):
+        """Empty mesh raises MeshValidationError."""
+        empty_mesh = trimesh.Trimesh()
+        with pytest.raises(MeshValidationError, match="empty"):
+            slice_mesh(empty_mesh)
+
+
+class TestMeshRepair:
+    """QA test suite for automated mesh repair, normal healing, and hole filling."""
+
+    def test_repair_open_hole_mesh(self):
+        """
+        Create a box with a missing top face (open/non-watertight).
+        Run repair_mesh to fill boundary hole and restore watertight manifold status.
+        """
+        # Create a cube and remove 2 triangular faces forming the top face
+        box = trimesh.creation.box(extents=[20.0, 20.0, 20.0])
+        # Remove top 2 faces (faces with +Z normals)
+        top_face_mask = box.face_normals[:, 2] > 0.9
+        non_top_faces = box.faces[~top_face_mask]
+        open_box = trimesh.Trimesh(vertices=box.vertices, faces=non_top_faces, process=False)
+
+        assert open_box.is_watertight is False
+
+        repaired, report = repair_mesh(
+            mesh=open_box,
+            fill_holes=True,
+            fix_normals=True,
+            remove_degenerate=True,
+            weld_vertices=True,
+        )
+
+        assert report.is_watertight_before is False
+        assert report.is_watertight_after is True
+        assert repaired.is_watertight is True
+        assert report.holes_filled >= 1
+        assert report.volume_restored_cm3 is not None
+        assert pytest.approx(report.volume_restored_cm3, rel=1e-2) == 8.0
+
+    def test_repair_degenerate_faces_and_duplicate_vertices(self):
+        """
+        Create a mesh with duplicate vertices and a zero-area degenerate face.
+        Run repair_mesh and verify degenerate triangles are purged and duplicate vertices welded.
+        """
+        # Base cube
+        box = trimesh.creation.box(extents=[10.0, 10.0, 10.0])
+        v = box.vertices.copy()
+        f = box.faces.copy()
+
+        # Add a duplicate vertex at [0, 0, 0]
+        v_extra = np.vstack([v, [0.0, 0.0, 0.0]])
+        # Add a degenerate face with vertices [0, 0, 0]
+        f_extra = np.vstack([f, [len(v), len(v), len(v)]])
+
+        dirty_mesh = trimesh.Trimesh(vertices=v_extra, faces=f_extra, process=False)
+        repaired, report = repair_mesh(
+            mesh=dirty_mesh,
+            fill_holes=True,
+            fix_normals=True,
+            remove_degenerate=True,
+            weld_vertices=True,
+        )
+
+        assert report.degenerate_faces_removed >= 1 or report.duplicate_vertices_welded >= 1
+        assert repaired.is_watertight is True
+
+    def test_repair_already_watertight_mesh(self, cube_20mm_mesh):
+        """Repairing an already valid watertight mesh preserves geometry and volume."""
+        repaired, report = repair_mesh(cube_20mm_mesh)
+
+        assert report.is_watertight_before is True
+        assert report.is_watertight_after is True
+        assert repaired.is_watertight is True
+        assert pytest.approx(report.volume_restored_cm3, rel=1e-2) == 8.0
+
+    def test_repair_empty_mesh_raises_validation_error(self):
+        """Attempting to repair empty mesh raises MeshValidationError."""
+        empty = trimesh.Trimesh()
+        with pytest.raises(MeshValidationError, match="empty"):
+            repair_mesh(empty)

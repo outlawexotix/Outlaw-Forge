@@ -11,8 +11,12 @@ from app.models.mesh import (
     ExportModelPayload,
     ExportModelResponse,
     OverhangAnalysisResult,
+    RepairModelPayload,
+    RepairModelResult,
     RotateModelPayload,
     ScaleModelPayload,
+    SliceModelPayload,
+    SliceModelResult,
 )
 from app.models.printer import PrinterProfile
 from app.models.project import (
@@ -589,6 +593,232 @@ async def get_model_overhangs(
     diagnostics = mesh_service.analyze_overhangs(mesh, critical_angle_deg=critical_angle_deg)
     diagnostics.model_id = model_id
     return diagnostics
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/repair",
+    response_model=RepairModelResult,
+    summary="Automated mesh repair and geometry healing",
+)
+@router.post(
+    "/models/{model_id}/repair",
+    response_model=RepairModelResult,
+    summary="Automated mesh repair and geometry healing direct",
+)
+async def repair_model(
+    model_id: str,
+    payload: Optional[RepairModelPayload] = None,
+    project_id: Optional[str] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+) -> RepairModelResult:
+    """
+    Automated mesh repair and geometric healing:
+    - Removes degenerate zero-area faces and duplicate triangles
+    - Merges coincident vertices within tolerance
+    - Unifies vertex winding order and fixes inverted normals
+    - Fills and triangulates open boundary holes to restore watertight manifold topology
+    Saves repaired mesh revision in data/working/, updates database metadata, and logs OPERATION 'REPAIR'.
+    """
+    if project_id:
+        model = await project_repo.get_working_model_for_project(project_id, model_id)
+    else:
+        model = await project_repo.get_working_model(model_id)
+
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found",
+        )
+
+    resolved_path = storage_service.resolve_path(model.storage_path)
+    mesh = mesh_service.load_mesh(resolved_path)
+
+    opts = payload or RepairModelPayload()
+    repaired_mesh, report = mesh_service.repair_mesh(
+        mesh=mesh,
+        fill_holes=opts.fill_holes,
+        fix_normals=opts.fix_normals,
+        remove_degenerate=opts.effective_remove_degenerate,
+        weld_vertices=opts.weld_vertices,
+        weld_tolerance_mm=opts.effective_weld_tolerance_mm,
+    )
+
+    analysis = mesh_service.analyze_mesh(repaired_mesh)
+
+    repaired_filename = f"repaired_{model.filename}"
+    file_uuid = uuid.uuid4().hex[:12]
+    new_working_filename = f"{file_uuid}_{storage_service.sanitize_filename(repaired_filename)}"
+    new_working_path = (storage_service.working_dir / new_working_filename).resolve()
+    storage_service.validate_safe_path(new_working_path)
+
+    mesh_service.export_mesh(repaired_mesh, new_working_path, format=model.file_format)
+    relative_storage_path = f"working/{new_working_filename}"
+
+    updated_model = await project_repo.update_working_model(
+        model_id=model_id,
+        storage_path=relative_storage_path,
+        bounds=analysis.bounds,
+        triangle_count=analysis.triangle_count,
+        vertex_count=analysis.vertex_count,
+        surface_area_cm2=analysis.surface_area_cm2,
+        volume_cm3=analysis.volume_cm3,
+        is_watertight=analysis.is_watertight,
+        transform=model.transform,
+    )
+
+    if not updated_model:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update working model in database.",
+        )
+
+    await project_repo.record_operation(
+        project_id=model.project_id,
+        model_id=model_id,
+        operation_type="REPAIR",
+        parameters=opts.model_dump(),
+        user_summary=f"Automated mesh repair: {report.holes_filled} holes filled, {report.degenerate_faces_removed} degenerate faces removed, watertight: {report.is_watertight_after}",
+        resulting_state_ref=model_id,
+        success=True,
+    )
+
+    return RepairModelResult(
+        repaired_model=updated_model,
+        report=report,
+        message=f"Mesh repair completed successfully: {'Watertight' if report.is_watertight_after else 'Healed'}",
+    )
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/slice",
+    response_model=SliceModelResult,
+    summary="Planar slice model into top and bottom parts",
+)
+@router.post(
+    "/models/{model_id}/slice",
+    response_model=SliceModelResult,
+    summary="Planar slice model direct",
+)
+async def slice_model(
+    model_id: str,
+    payload: SliceModelPayload,
+    project_id: Optional[str] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+) -> SliceModelResult:
+    """
+    Split a 3D model into top and bottom watertight halves along an arbitrary planar slice.
+    Optionally generate interlocking alignment dowel pegs and sockets on mating cut surfaces.
+    Saves both halves as new working models in data/working/, adds them to the project,
+    and logs the SLICE operation.
+    """
+    if project_id:
+        model = await project_repo.get_working_model_for_project(project_id, model_id)
+    else:
+        model = await project_repo.get_working_model(model_id)
+
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found",
+        )
+
+    resolved_path = storage_service.resolve_path(model.storage_path)
+    mesh = mesh_service.load_mesh(resolved_path)
+
+    try:
+        top_mesh, bottom_mesh, cut_area_cm2 = mesh_service.slice_mesh(
+            mesh=mesh,
+            plane_origin=payload.plane_origin,
+            plane_normal=payload.plane_normal,
+            cap_faces=payload.cap_faces,
+            create_pegs=payload.create_pegs,
+            peg_radius_mm=payload.peg_radius_mm,
+            peg_height_mm=payload.peg_height_mm,
+            peg_clearance_mm=payload.peg_clearance_mm,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to slice mesh: {str(e)}",
+        )
+
+    # Analyze both sliced meshes
+    top_analysis = mesh_service.analyze_mesh(top_mesh)
+    bottom_analysis = mesh_service.analyze_mesh(bottom_mesh)
+
+    stem = Path(model.filename).stem
+    ext = model.file_format.lower().lstrip(".")
+
+    top_filename = f"{stem}_top.{ext}"
+    top_uuid = uuid.uuid4().hex[:12]
+    top_working_filename = f"{top_uuid}_{storage_service.sanitize_filename(top_filename)}"
+    top_working_path = (storage_service.working_dir / top_working_filename).resolve()
+    storage_service.validate_safe_path(top_working_path)
+    mesh_service.export_mesh(top_mesh, top_working_path, format=ext)
+    top_rel_path = f"working/{top_working_filename}"
+
+    bottom_filename = f"{stem}_bottom.{ext}"
+    bottom_uuid = uuid.uuid4().hex[:12]
+    bottom_working_filename = f"{bottom_uuid}_{storage_service.sanitize_filename(bottom_filename)}"
+    bottom_working_path = (storage_service.working_dir / bottom_working_filename).resolve()
+    storage_service.validate_safe_path(bottom_working_path)
+    mesh_service.export_mesh(bottom_mesh, bottom_working_path, format=ext)
+    bottom_rel_path = f"working/{bottom_working_filename}"
+
+    from app.models.project import MeshTransform
+    base_transform = MeshTransform(
+        position_mm=[0.0, 0.0, 0.0],
+        rotation_deg=[0.0, 0.0, 0.0],
+        scale_factors=[1.0, 1.0, 1.0],
+        uniform_scale_percent=100.0,
+    )
+
+    top_working = await project_repo.add_working_model(
+        project_id=model.project_id,
+        source_file_id=model.source_file_id,
+        filename=top_filename,
+        file_format=ext,
+        storage_path=top_rel_path,
+        bounds=top_analysis.bounds,
+        triangle_count=top_analysis.triangle_count,
+        vertex_count=top_analysis.vertex_count,
+        surface_area_cm2=top_analysis.surface_area_cm2,
+        volume_cm3=top_analysis.volume_cm3,
+        is_watertight=top_analysis.is_watertight,
+        transform=base_transform,
+    )
+
+    bottom_working = await project_repo.add_working_model(
+        project_id=model.project_id,
+        source_file_id=model.source_file_id,
+        filename=bottom_filename,
+        file_format=ext,
+        storage_path=bottom_rel_path,
+        bounds=bottom_analysis.bounds,
+        triangle_count=bottom_analysis.triangle_count,
+        vertex_count=bottom_analysis.vertex_count,
+        surface_area_cm2=bottom_analysis.surface_area_cm2,
+        volume_cm3=bottom_analysis.volume_cm3,
+        is_watertight=bottom_analysis.is_watertight,
+        transform=base_transform,
+    )
+
+    await project_repo.record_operation(
+        project_id=model.project_id,
+        model_id=model_id,
+        operation_type="SLICE",
+        parameters=payload.model_dump(),
+        user_summary=f"Planar sliced model into 2 parts: '{top_filename}' and '{bottom_filename}' (Cut Area: {cut_area_cm2} cm²)",
+        resulting_state_ref=f"{top_working.id},{bottom_working.id}",
+        success=True,
+    )
+
+    return SliceModelResult(
+        top_model=top_working,
+        bottom_model=bottom_working,
+        cut_area_cm2=cut_area_cm2,
+        message=f"Model successfully split into '{top_filename}' and '{bottom_filename}'",
+    )
 
 
 @router.post(

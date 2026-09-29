@@ -91,6 +91,10 @@ export default function WorkbenchPage() {
   // Model Buffer
   const [activeModelBuffer, setActiveModelBuffer] = useState<ArrayBuffer | null>(null);
 
+  // Slicing Cutting Plane State
+  const [slicePlaneOrigin, setSlicePlaneOrigin] = useState<[number, number, number]>([0, 0, 25]);
+  const [slicePlaneNormal, setSlicePlaneNormal] = useState<[number, number, number]>([0, 0, 1]);
+
   // Cursor 3D Coordinate tracking
   const [cursorCoords, setCursorCoords] = useState<{ x: number; y: number; z: number }>({
     x: 0,
@@ -303,6 +307,21 @@ export default function WorkbenchPage() {
     setSaveStatus("saved");
   };
 
+  // Handle Model Sliced into Top and Bottom Parts
+  const handleModelSliced = (result: any) => {
+    if (!activeProject) return;
+    setActiveModelBuffer(null);
+    setActiveProject((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        working_models: [...prev.working_models, result.top_model, result.bottom_model],
+      };
+    });
+    setSaveStatus("saved");
+    handleRefreshOperations();
+  };
+
   // Refresh project operations
   const handleRefreshOperations = async () => {
     if (!activeProject) return;
@@ -350,7 +369,9 @@ export default function WorkbenchPage() {
             model={activeWorkingModel}
             modelBuffer={activeModelBuffer}
             activeTool={activeTool}
-            onCursorCoordinates={(coords) => setCursorCoords(coords)}
+            slicePlaneOrigin={slicePlaneOrigin}
+            slicePlaneNormal={slicePlaneNormal}
+            onCursorCoordinates={(coords: { x: number; y: number; z: number }) => setCursorCoords(coords)}
             className="w-full h-full"
           />
         </main>
@@ -365,6 +386,11 @@ export default function WorkbenchPage() {
           onPrinterChange={handlePrinterChange}
           onOpenCreatePrinter={() => setIsCreatePrinterDialogOpen(true)}
           onModelUpdated={handleModelUpdated}
+          onModelSliced={handleModelSliced}
+          onSlicePlaneChange={(origin, normal) => {
+            setSlicePlaneOrigin(origin);
+            setSlicePlaneNormal(normal);
+          }}
           onOperationRecorded={handleRefreshOperations}
         />
       </div>
@@ -417,4 +443,3 @@ export default function WorkbenchPage() {
     </div>
   );
 }
-

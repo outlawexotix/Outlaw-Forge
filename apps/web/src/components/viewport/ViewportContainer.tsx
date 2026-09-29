@@ -9,6 +9,7 @@ import { BuildPlate } from './BuildPlate';
 import { SceneLights } from './SceneLights';
 import { OrientationGizmo } from './OrientationGizmo';
 import { ModelRenderer } from './ModelRenderer';
+import { CuttingPlane } from './CuttingPlane';
 import { PrinterProfile, WorkingModel } from '@shared/types/api';
 import { PresetView, ViewportSettings } from '@shared/types/viewport';
 import {
@@ -58,6 +59,8 @@ export interface ViewportContainerProps {
   modelBuffer?: ArrayBuffer | null;
   modelUrl?: string | null;
   activeTool?: 'select' | 'move' | 'rotate' | 'scale' | 'slice' | 'inspect';
+  slicePlaneOrigin?: [number, number, number];
+  slicePlaneNormal?: [number, number, number];
   className?: string;
   onModelMetrics?: (metrics: MeshMetrics) => void;
   onCursorCoordinates?: (coords: { x: number; y: number; z: number }) => void;
@@ -74,7 +77,7 @@ const BedRaycaster: React.FC<{
 }> = ({ bedWidth, bedDepth, onHover }) => {
   return (
     <mesh
-      position={[bedWidth / 2, bedDepth / 2, 0]}
+      position={[0, 0, 0]}
       visible={false}
       onPointerMove={(e) => {
         e.stopPropagation();
@@ -100,6 +103,8 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   modelBuffer = null,
   modelUrl = null,
   activeTool = 'select',
+  slicePlaneOrigin,
+  slicePlaneNormal,
   className = '',
   onModelMetrics,
   onCursorCoordinates,
@@ -240,7 +245,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
         {settings.cameraProjection === 'perspective' ? (
           <PerspectiveCamera
             makeDefault
-            position={[bedWidth / 2 + 200, 220, -bedDepth / 2 + 220]}
+            position={[200, 220, 220]}
             fov={45}
             near={0.5}
             far={5000}
@@ -248,7 +253,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
         ) : (
           <OrthographicCamera
             makeDefault
-            position={[bedWidth / 2 + 200, 220, -bedDepth / 2 + 220]}
+            position={[200, 220, 220]}
             zoom={2.2}
             near={-2000}
             far={5000}
@@ -258,7 +263,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
         <OrbitControls
           ref={controlsRef}
           makeDefault
-          target={[bedWidth / 2, 25, -bedDepth / 2]}
+          target={[0, 25, 0]}
           enabled={!isGizmoDragging}
           enableDamping
           dampingFactor={0.08}
@@ -294,6 +299,17 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
             onGizmoDragging={(dragging) => setIsGizmoDragging(dragging)}
             onError={handleModelError}
           />
+
+          {/* Planar Slicing Cutting Plane */}
+          {activeTool === 'slice' && (
+            <CuttingPlane
+              visible={true}
+              planeOrigin={slicePlaneOrigin || [0, 0, model ? (model.bounds.dimensions_mm[2] / 2) : 25]}
+              planeNormal={slicePlaneNormal || [0, 0, 1]}
+              width={bedWidth}
+              depth={bedDepth}
+            />
+          )}
 
           {/* Interactive raycast ground plane (muted during gizmo dragging) */}
           {onCursorCoordinates && !isGizmoDragging && (

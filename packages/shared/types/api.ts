@@ -85,7 +85,7 @@ export interface PrinterProfile {
   created_at?: string;
 }
 
-export type OperationType = 'IMPORT' | 'SCALE' | 'ROTATE' | 'EXPORT';
+export type OperationType = 'IMPORT' | 'SCALE' | 'ROTATE' | 'CENTER' | 'LAY_FLAT' | 'SLICE' | 'REPAIR' | 'EXPORT';
 
 export interface OperationRecord {
   id: string;
@@ -197,3 +197,45 @@ export interface ExportModelPayload {
   filename?: string;
 }
 
+export interface SliceModelPayload {
+  plane_origin?: [number, number, number];
+  plane_normal?: [number, number, number];
+  cap_faces?: boolean;
+  create_pegs?: boolean;
+  peg_radius_mm?: number;
+  peg_height_mm?: number;
+  peg_clearance_mm?: number;
+}
+
+export interface SliceModelResult {
+  top_model: WorkingModel;
+  bottom_model: WorkingModel;
+  cut_area_cm2: number;
+  message: string;
+}
+
+export interface MeshRepairReport {
+  holes_filled: number;
+  degenerate_faces_removed: number;
+  duplicate_vertices_welded: number;
+  inverted_normals_fixed: boolean;
+  is_watertight_before: boolean;
+  is_watertight_after: boolean;
+  triangle_count_before: number;
+  triangle_count_after: number;
+  volume_restored_cm3: number | null;
+}
+
+export interface RepairModelPayload {
+  fill_holes?: boolean;
+  fix_normals?: boolean;
+  remove_degenerate?: boolean;
+  weld_vertices?: boolean;
+  weld_tolerance_mm?: number;
+}
+
+export interface RepairModelResult {
+  repaired_model: WorkingModel;
+  report: MeshRepairReport;
+  message: string;
+}

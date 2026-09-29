@@ -311,3 +311,78 @@ class TestModelEndpoints:
         assert data["total_face_count"] == 12
         assert data["overhang_face_count"] == 2
 
+    def test_slice_model_endpoint(self, client: TestClient):
+        proj_res = client.post("/projects", json={"name": "Slice Proj", "project_type": "Statue"})
+        project_id = proj_res.json()["id"]
+
+        # 20x20x40 model
+        stl_data = create_sample_stl_bytes(20.0, 20.0, 40.0)
+        files = {"file": ("statue_tall.stl", stl_data, "application/octet-stream")}
+        import_res = client.post(f"/projects/{project_id}/models/import", files=files)
+        model_id = import_res.json()["id"]
+
+        # Slice at Z=0 (mid-height of [-20, 20])
+        payload = {
+            "plane_origin": [0.0, 0.0, 0.0],
+            "plane_normal": [0.0, 0.0, 1.0],
+            "cap_faces": True,
+            "create_pegs": False,
+        }
+        slice_res = client.post(f"/projects/{project_id}/models/{model_id}/slice", json=payload)
+        assert slice_res.status_code == 200
+        data = slice_res.json()
+
+        assert "top_model" in data
+        assert "bottom_model" in data
+        assert data["top_model"]["is_watertight"] is True
+        assert data["bottom_model"]["is_watertight"] is True
+        assert data["cut_area_cm2"] > 0
+
+        # Verify project has updated working models list and operation logged
+        proj_check = client.get(f"/projects/{project_id}").json()
+        assert len(proj_check["working_models"]) == 3  # original + top + bottom
+        op_types = [op["operation_type"] for op in proj_check["operations"]]
+        assert "SLICE" in op_types
+
+    def test_repair_model_endpoint(self, client: TestClient):
+        proj_res = client.post("/projects", json={"name": "Repair Proj", "project_type": "Prop"})
+        project_id = proj_res.json()["id"]
+
+        # Create an open non-watertight box (remove top 2 faces)
+        box = trimesh.creation.box(extents=[20.0, 20.0, 20.0])
+        top_face_mask = box.face_normals[:, 2] > 0.9
+        non_top_faces = box.faces[~top_face_mask]
+        open_box = trimesh.Trimesh(vertices=box.vertices, faces=non_top_faces, process=False)
+        out = io.BytesIO()
+        open_box.export(out, file_type="stl")
+        stl_data = out.getvalue()
+
+        files = {"file": ("open_box.stl", stl_data, "application/octet-stream")}
+        import_res = client.post(f"/projects/{project_id}/models/import", files=files)
+        model_id = import_res.json()["id"]
+        assert import_res.json()["is_watertight"] is False
+
+        # POST /projects/{id}/models/{id}/repair
+        repair_payload = {
+            "fill_holes": True,
+            "fix_normals": True,
+            "remove_degenerate_faces": True,
+            "weld_vertices": True,
+            "weld_threshold_mm": 0.001,
+        }
+        repair_res = client.post(f"/projects/{project_id}/models/{model_id}/repair", json=repair_payload)
+        assert repair_res.status_code == 200
+        data = repair_res.json()
+
+        assert "repaired_model" in data
+        assert "report" in data
+        assert data["repaired_model"]["is_watertight"] is True
+        assert data["report"]["is_watertight_before"] is False
+        assert data["report"]["is_watertight_after"] is True
+        assert data["report"]["holes_filled"] >= 1
+        assert data["report"]["volume_restored_cm3"] is not None
+
+        # Verify operation log
+        proj_check = client.get(f"/projects/{project_id}").json()
+        op_types = [op["operation_type"] for op in proj_check["operations"]]
+        assert "REPAIR" in op_types

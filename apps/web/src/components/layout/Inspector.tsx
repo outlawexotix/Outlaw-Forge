@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { 
   WorkingModel, 
   PrinterProfile, 
@@ -8,7 +8,12 @@ import {
   OperationRecord,
   ScaleModelPayload,
   ExportModelPayload,
-  OverhangAnalysis
+  OverhangAnalysis,
+  SliceModelPayload,
+  SliceModelResult,
+  MeshRepairReport,
+  RepairModelPayload,
+  RepairModelResult
 } from "@shared/types/api";
 import { formatNumber } from "@/lib/utils";
 import { apiClient } from "@/lib/api-client";
@@ -31,7 +36,12 @@ import {
   ArrowDownToLine,
   ScanSearch,
   PlusCircle,
-  RotateCw
+  RotateCw,
+  Scissors,
+  SplitSquareVertical,
+  Wrench,
+  Sparkles,
+  CheckCheck
 } from "lucide-react";
 
 interface InspectorProps {
@@ -44,10 +54,12 @@ interface InspectorProps {
   onPrinterChange?: (printer: PrinterProfile) => void;
   onOpenCreatePrinter?: () => void;
   onModelUpdated?: (model: WorkingModel) => void;
+  onModelSliced?: (result: SliceModelResult) => void;
+  onSlicePlaneChange?: (origin: [number, number, number], normal: [number, number, number]) => void;
   onOperationRecorded?: () => void;
 }
 
-type TabType = "dimensions" | "transform" | "printability" | "export" | "history";
+type TabType = "dimensions" | "transform" | "slice" | "repair" | "printability" | "export" | "history";
 
 export function Inspector({
   projectId,
@@ -59,6 +71,8 @@ export function Inspector({
   onPrinterChange,
   onOpenCreatePrinter,
   onModelUpdated,
+  onModelSliced,
+  onSlicePlaneChange,
   onOperationRecorded,
 }: InspectorProps) {
   const [activeTab, setActiveTab] = useState<TabType>("dimensions");
@@ -95,7 +109,34 @@ export function Inspector({
   const [isExporting, setIsExporting] = useState(false);
   const [exportDownloadUrl, setExportDownloadUrl] = useState<string | null>(null);
 
-  const dims = mesh?.bounds.dimensions_mm ?? [0, 0, 0];
+  // Planar Slicing state
+  const [sliceAxis, setSliceAxis] = useState<"Z" | "X" | "Y">("Z");
+  const [slicePos, setSlicePos] = useState<number>(mesh?.bounds?.dimensions_mm ? mesh.bounds.dimensions_mm[2] / 2 : 25);
+  const [capCutFaces, setCapCutFaces] = useState<boolean>(true);
+  const [createPegs, setCreatePegs] = useState<boolean>(false);
+  const [pegRadius, setPegRadius] = useState<number>(3.0);
+  const [pegHeight, setPegHeight] = useState<number>(6.0);
+  const [pegClearance, setPegClearance] = useState<number>(0.2);
+  const [isSlicing, setIsSlicing] = useState(false);
+  const [sliceMessage, setSliceMessage] = useState<string | null>(null);
+  const [sliceResult, setSliceResult] = useState<SliceModelResult | null>(null);
+
+  // Mesh Repair state
+  const [fillHoles, setFillHoles] = useState<boolean>(true);
+  const [fixNormals, setFixNormals] = useState<boolean>(true);
+  const [removeDegenerate, setRemoveDegenerate] = useState<boolean>(true);
+  const [weldVertices, setWeldVertices] = useState<boolean>(true);
+  const [weldThreshold, setWeldThreshold] = useState<number>(0.0001);
+  const [isRepairing, setIsRepairing] = useState<boolean>(false);
+  const [repairMessage, setRepairMessage] = useState<string | null>(null);
+  const [repairReport, setRepairReport] = useState<MeshRepairReport | null>(null);
+
+  const dims = useMemo<[number, number, number]>(() => {
+    const dimensions = mesh?.bounds.dimensions_mm;
+    return dimensions
+      ? [dimensions[0], dimensions[1], dimensions[2]]
+      : [0, 0, 0];
+  }, [mesh?.bounds.dimensions_mm]);
   const bedW = printer.build_width_mm || 220;
   const bedD = printer.build_depth_mm || 220;
   const bedH = printer.build_height_mm || 250;
@@ -104,6 +145,33 @@ export function Inspector({
   const fitsY = dims[1] <= bedD;
   const fitsZ = dims[2] <= bedH;
   const fitsInBed = fitsX && fitsY && fitsZ;
+
+  // Sync slice position when active model changes
+  useEffect(() => {
+    if (mesh) {
+      if (sliceAxis === "Z") setSlicePos(Math.round((dims[2] / 2) * 10) / 10);
+      else if (sliceAxis === "X") setSlicePos(0);
+      else if (sliceAxis === "Y") setSlicePos(0);
+    }
+  }, [mesh, sliceAxis, dims]);
+
+  // Sync 3D cutting plane in viewport
+  useEffect(() => {
+    if (!onSlicePlaneChange) return;
+    let normal: [number, number, number] = [0, 0, 1];
+    let origin: [number, number, number] = [0, 0, slicePos];
+    if (sliceAxis === "X") {
+      normal = [1, 0, 0];
+      origin = [slicePos, 0, (dims[2] || 50) / 2];
+    } else if (sliceAxis === "Y") {
+      normal = [0, 1, 0];
+      origin = [0, slicePos, (dims[2] || 50) / 2];
+    } else {
+      normal = [0, 0, 1];
+      origin = [0, 0, slicePos];
+    }
+    onSlicePlaneChange(origin, normal);
+  }, [sliceAxis, slicePos, onSlicePlaneChange, dims]);
 
   // Sync dimension inputs when mesh changes or scale updates
   useEffect(() => {
@@ -141,7 +209,7 @@ export function Inspector({
       }
     }
     fetchOverhangs();
-  }, [mesh?.id, projectId, mesh?.surface_area_cm2, mesh?.is_watertight]);
+  }, [mesh, projectId]);
 
   const handleCenterBed = async () => {
     if (!mesh || !projectId) return;
@@ -254,6 +322,79 @@ export function Inspector({
     }
   };
 
+  const handleExecuteSlice = async () => {
+    if (!mesh || !projectId) return;
+    setIsSlicing(true);
+    setSliceMessage(null);
+    setSliceResult(null);
+
+    let normal: [number, number, number] = [0, 0, 1];
+    let origin: [number, number, number] = [0, 0, slicePos];
+    if (sliceAxis === "X") {
+      normal = [1, 0, 0];
+      origin = [slicePos, 0, (dims[2] || 50) / 2];
+    } else if (sliceAxis === "Y") {
+      normal = [0, 1, 0];
+      origin = [0, slicePos, (dims[2] || 50) / 2];
+    } else {
+      normal = [0, 0, 1];
+      origin = [0, 0, slicePos];
+    }
+
+    const payload: SliceModelPayload = {
+      plane_origin: origin,
+      plane_normal: normal,
+      cap_faces: capCutFaces,
+      create_pegs: createPegs,
+      peg_radius_mm: pegRadius,
+      peg_height_mm: pegHeight,
+      peg_clearance_mm: pegClearance,
+    };
+
+    try {
+      const result = await apiClient.sliceModel(projectId, mesh.id, payload);
+      setSliceResult(result);
+      setSliceMessage(`Successfully split into 2 parts! (Cut area: ${result.cut_area_cm2} cm²)`);
+      if (onModelSliced) {
+        onModelSliced(result);
+      } else if (onModelUpdated) {
+        onModelUpdated(result.top_model);
+      }
+      if (onOperationRecorded) onOperationRecorded();
+    } catch (err: any) {
+      setSliceMessage(`Slice failed: ${err.message}`);
+    } finally {
+      setIsSlicing(false);
+    }
+  };
+
+  const handleRepair = async () => {
+    if (!mesh || !projectId) return;
+    setIsRepairing(true);
+    setRepairMessage(null);
+    setRepairReport(null);
+
+    const payload: RepairModelPayload = {
+      fill_holes: fillHoles,
+      fix_normals: fixNormals,
+      remove_degenerate: removeDegenerate,
+      weld_vertices: weldVertices,
+      weld_tolerance_mm: weldThreshold,
+    };
+
+    try {
+      const res = await apiClient.repairModel(projectId, mesh.id, payload);
+      setRepairReport(res.report);
+      setRepairMessage(`Mesh repair complete! ${res.report.is_watertight_after ? "Manifold Watertight" : "Healed"}`);
+      if (onModelUpdated) onModelUpdated(res.repaired_model);
+      if (onOperationRecorded) onOperationRecorded();
+    } catch (err: any) {
+      setRepairMessage(`Repair failed: ${err.message}`);
+    } finally {
+      setIsRepairing(false);
+    }
+  };
+
   const handleExport = async () => {
     if (!mesh || !projectId) return;
     setIsExporting(true);
@@ -301,6 +442,30 @@ export function Inspector({
         >
           <Maximize2 className="w-3 h-3" />
           <span>Transform</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("slice")}
+          className={`flex-1 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 ${
+            activeTab === "slice"
+              ? "border-cyan-400 text-cyan-300 bg-cyan-950/20"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Scissors className="w-3 h-3" />
+          <span>Slice</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("repair")}
+          className={`flex-1 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 ${
+            activeTab === "repair"
+              ? "border-cyan-400 text-cyan-300 bg-cyan-950/20"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Wrench className="w-3 h-3" />
+          <span>Repair</span>
         </button>
 
         <button
@@ -457,6 +622,16 @@ export function Inspector({
                   </span>
                 </div>
               </div>
+
+              {!mesh?.is_watertight && (
+                <button
+                  onClick={() => setActiveTab("repair")}
+                  className="w-full py-2 px-3 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 rounded-lg text-xs font-bold text-amber-300 flex items-center justify-center space-x-2 transition"
+                >
+                  <Wrench className="w-3.5 h-3.5" />
+                  <span>Fix Holes & Heal Mesh in Repair Studio &rarr;</span>
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -761,6 +936,433 @@ export function Inspector({
             >
               {isScaling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Maximize2 className="w-3.5 h-3.5" />}
               <span>Apply Scale Transformation</span>
+            </button>
+          </div>
+        )}
+
+        {/* TAB: PLANAR SLICE & MESH SPLIT */}
+        {activeTab === "slice" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Planar Slicing & Split
+              </span>
+              <span className="text-[10px] text-cyan-400">WATERTIGHT CAD</span>
+            </div>
+
+            {/* Slicing Plane Normal Orientation Selector */}
+            <div className="space-y-1.5">
+              <label className="text-slate-400 text-[11px] font-bold">Cut Plane Orientation</label>
+              <div className="grid grid-cols-3 gap-1.5 bg-slate-900/80 p-1 rounded border border-slate-800">
+                <button
+                  onClick={() => setSliceAxis("Z")}
+                  className={`py-1.5 text-[10px] font-bold rounded transition ${
+                    sliceAxis === "Z"
+                      ? "bg-cyan-600 text-slate-950 shadow"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                  title="Horizontal cut parallel to bed (Z-axis)"
+                >
+                  Z (Horizontal)
+                </button>
+                <button
+                  onClick={() => setSliceAxis("X")}
+                  className={`py-1.5 text-[10px] font-bold rounded transition ${
+                    sliceAxis === "X"
+                      ? "bg-cyan-600 text-slate-950 shadow"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                  title="Sagittal cut parallel to width (X-axis)"
+                >
+                  X (Sagittal)
+                </button>
+                <button
+                  onClick={() => setSliceAxis("Y")}
+                  className={`py-1.5 text-[10px] font-bold rounded transition ${
+                    sliceAxis === "Y"
+                      ? "bg-cyan-600 text-slate-950 shadow"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                  title="Coronal cut parallel to depth (Y-axis)"
+                >
+                  Y (Coronal)
+                </button>
+              </div>
+            </div>
+
+            {/* Cut Plane Position Slider */}
+            <div className="bg-slate-900/70 border border-slate-800 rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-slate-300 text-[11px] font-bold">
+                  Cut Position ({sliceAxis} Height)
+                </label>
+                <div className="flex items-center space-x-1">
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={slicePos}
+                    onChange={(e) => setSlicePos(parseFloat(e.target.value) || 0)}
+                    className="w-18 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-right text-cyan-300 font-mono text-xs focus:outline-none focus:border-cyan-400"
+                  />
+                  <span className="text-[10px] text-slate-500 font-mono">mm</span>
+                </div>
+              </div>
+
+              <input
+                type="range"
+                min={sliceAxis === "Z" ? 0 : -(dims[sliceAxis === "X" ? 0 : 1] / 2)}
+                max={sliceAxis === "Z" ? (dims[2] || 100) : (dims[sliceAxis === "X" ? 0 : 1] / 2)}
+                step="0.5"
+                value={slicePos}
+                onChange={(e) => setSlicePos(parseFloat(e.target.value))}
+                className="w-full accent-cyan-400 cursor-pointer"
+              />
+
+              {/* Quick Snap Positions */}
+              <div className="grid grid-cols-3 gap-1.5 pt-1">
+                <button
+                  onClick={() => {
+                    const maxDim = dims[sliceAxis === "Z" ? 2 : sliceAxis === "X" ? 0 : 1] || 50;
+                    setSlicePos(Math.round((maxDim * 0.25) * 10) / 10);
+                  }}
+                  className="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] text-slate-300 transition"
+                >
+                  25% Low
+                </button>
+                <button
+                  onClick={() => {
+                    const maxDim = dims[sliceAxis === "Z" ? 2 : sliceAxis === "X" ? 0 : 1] || 50;
+                    setSlicePos(Math.round((maxDim * 0.5) * 10) / 10);
+                  }}
+                  className="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] text-cyan-300 font-bold border border-cyan-500/30 transition"
+                >
+                  50% Center
+                </button>
+                <button
+                  onClick={() => {
+                    const maxDim = dims[sliceAxis === "Z" ? 2 : sliceAxis === "X" ? 0 : 1] || 50;
+                    setSlicePos(Math.round((maxDim * 0.75) * 10) / 10);
+                  }}
+                  className="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] text-slate-300 transition"
+                >
+                  75% High
+                </button>
+              </div>
+            </div>
+
+            {/* Watertight Planar Cap Checkbox */}
+            <div className="bg-slate-900/50 border border-slate-800/80 rounded-lg p-2.5 space-y-2">
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={capCutFaces}
+                  onChange={(e) => setCapCutFaces(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-cyan-500 focus:ring-cyan-400"
+                />
+                <span className="text-[11px] text-slate-200 font-semibold">
+                  Cap cut surfaces (watertight triangulation)
+                </span>
+              </label>
+              <p className="text-[10px] text-slate-400 pl-5">
+                Automatically seals mating cross-sections with 2D Delaunay polygons for direct 3D printing.
+              </p>
+            </div>
+
+            {/* Alignment Peg & Socket Connectors */}
+            <div className="bg-slate-900/50 border border-slate-800/80 rounded-lg p-2.5 space-y-3">
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={createPegs}
+                  onChange={(e) => setCreatePegs(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-cyan-500 focus:ring-cyan-400"
+                />
+                <span className="text-[11px] text-slate-200 font-semibold">
+                  Generate Interlocking Alignment Pegs & Sockets
+                </span>
+              </label>
+
+              {createPegs && (
+                <div className="space-y-2.5 pl-5 pt-1 border-t border-slate-800/80">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-slate-400">Peg Radius:</span>
+                      <span className="text-cyan-300 font-mono">{pegRadius} mm</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1.0"
+                      max="10.0"
+                      step="0.5"
+                      value={pegRadius}
+                      onChange={(e) => setPegRadius(parseFloat(e.target.value))}
+                      className="w-full accent-cyan-400"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-slate-400">Peg Height:</span>
+                      <span className="text-cyan-300 font-mono">{pegHeight} mm</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="2.0"
+                      max="20.0"
+                      step="1.0"
+                      value={pegHeight}
+                      onChange={(e) => setPegHeight(parseFloat(e.target.value))}
+                      className="w-full accent-cyan-400"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-slate-400">Socket Clearance Tolerance:</span>
+                      <span className="text-cyan-300 font-mono">{pegClearance} mm</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="0.6"
+                      step="0.05"
+                      value={pegClearance}
+                      onChange={(e) => setPegClearance(parseFloat(e.target.value))}
+                      className="w-full accent-cyan-400"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Notification & Slicing Results Card */}
+            {sliceMessage && (
+              <div className={`p-2.5 rounded text-[11px] border ${
+                sliceResult
+                  ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300"
+                  : "bg-rose-950/30 border-rose-500/40 text-rose-300"
+              }`}>
+                {sliceMessage}
+              </div>
+            )}
+
+            {sliceResult && (
+              <div className="bg-slate-900/90 border border-cyan-500/40 rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">
+                    Slicing Outputs (2 Parts)
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    Area: {sliceResult.cut_area_cm2} cm²
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-[10px]">
+                  <div className="flex items-center justify-between p-1.5 bg-slate-950/60 rounded border border-slate-800">
+                    <div className="flex items-center space-x-1.5 truncate">
+                      <span className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />
+                      <span className="text-slate-200 truncate">{sliceResult.top_model.filename}</span>
+                    </div>
+                    <span className="text-slate-400 shrink-0">{formatNumber(sliceResult.top_model.triangle_count)} tris</span>
+                  </div>
+
+                  <div className="flex items-center justify-between p-1.5 bg-slate-950/60 rounded border border-slate-800">
+                    <div className="flex items-center space-x-1.5 truncate">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                      <span className="text-slate-200 truncate">{sliceResult.bottom_model.filename}</span>
+                    </div>
+                    <span className="text-slate-400 shrink-0">{formatNumber(sliceResult.bottom_model.triangle_count)} tris</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Execute Cut Button */}
+            <button
+              onClick={handleExecuteSlice}
+              disabled={!mesh || isSlicing}
+              className="w-full py-2.5 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-bold rounded transition flex items-center justify-center space-x-2 disabled:opacity-50 shadow-md cursor-pointer"
+            >
+              {isSlicing ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Scissors className="w-4 h-4" />
+              )}
+              <span>Execute Planar Split</span>
+            </button>
+          </div>
+        )}
+
+        {/* TAB: MESH REPAIR & HEALING */}
+        {activeTab === "repair" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Mesh Healing & Repair
+              </span>
+              <span className="text-[10px] text-cyan-400">AUTOMATED HEALING</span>
+            </div>
+
+            {/* Current Health Badge */}
+            <div className={`p-3 rounded-lg border flex flex-col space-y-2 ${
+              mesh?.is_watertight
+                ? "bg-emerald-950/20 border-emerald-500/40"
+                : "bg-amber-950/20 border-amber-500/40"
+            }`}>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-200">Mesh Topology Status</span>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border flex items-center space-x-1 ${
+                  mesh?.is_watertight
+                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                    : "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                }`}>
+                  {mesh?.is_watertight ? <ShieldCheck className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
+                  <span>{mesh?.is_watertight ? "MANIFOLD WATERTIGHT" : "NON-MANIFOLD / OPEN"}</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                {mesh?.is_watertight
+                  ? "Mesh is fully closed and manifold. Slicers will generate clean solid perimeters without perimeter leakage."
+                  : "Mesh contains open boundary edges or holes. Slicers may invert shells or fail slicing. Run auto-repair below to stitch open boundaries."}
+              </p>
+            </div>
+
+            {/* Repair Options Checklist */}
+            <div className="bg-slate-900/70 border border-slate-800 rounded-lg p-3 space-y-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Repair Operations
+              </span>
+
+              <div className="space-y-2.5">
+                <label className="flex items-center space-x-2 text-[11px] text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={fillHoles}
+                    onChange={(e) => setFillHoles(e.target.checked)}
+                    className="accent-cyan-400 rounded cursor-pointer"
+                  />
+                  <span>Fill & Stitch Open Boundary Holes</span>
+                </label>
+
+                <label className="flex items-center space-x-2 text-[11px] text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={fixNormals}
+                    onChange={(e) => setFixNormals(e.target.checked)}
+                    className="accent-cyan-400 rounded cursor-pointer"
+                  />
+                  <span>Unify & Invert Inconsistent Normals</span>
+                </label>
+
+                <label className="flex items-center space-x-2 text-[11px] text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={removeDegenerate}
+                    onChange={(e) => setRemoveDegenerate(e.target.checked)}
+                    className="accent-cyan-400 rounded cursor-pointer"
+                  />
+                  <span>Remove Degenerate & Zero-Area Faces</span>
+                </label>
+
+                <label className="flex items-center space-x-2 text-[11px] text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={weldVertices}
+                    onChange={(e) => setWeldVertices(e.target.checked)}
+                    className="accent-cyan-400 rounded cursor-pointer"
+                  />
+                  <span>Weld Coincident Duplicate Vertices</span>
+                </label>
+
+                {weldVertices && (
+                  <div className="pl-6 space-y-1">
+                    <div className="flex items-center justify-between text-[10px] text-slate-400">
+                      <span>Weld Tolerance</span>
+                      <span className="font-mono text-cyan-400">{weldThreshold} mm</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.00001"
+                      max="0.01"
+                      step="0.00005"
+                      value={weldThreshold}
+                      onChange={(e) => setWeldThreshold(parseFloat(e.target.value))}
+                      className="w-full accent-cyan-400 cursor-pointer"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Notification message */}
+            {repairMessage && (
+              <div className={`p-2.5 rounded text-[11px] border flex items-start space-x-2 ${
+                repairReport?.is_watertight_after
+                  ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300"
+                  : "bg-cyan-950/30 border-cyan-500/40 text-cyan-300"
+              }`}>
+                <CheckCheck className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{repairMessage}</span>
+              </div>
+            )}
+
+            {/* Repair Report Results Card */}
+            {repairReport && (
+              <div className="bg-slate-900/90 border border-cyan-500/40 rounded-lg p-3 space-y-2.5">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Repair Diagnostics</span>
+                  </span>
+                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                    repairReport.is_watertight_after
+                      ? "bg-emerald-500/20 text-emerald-300"
+                      : "bg-amber-500/20 text-amber-300"
+                  }`}>
+                    {repairReport.is_watertight_after ? "100% Watertight" : "Healed Partially"}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-[10px]">
+                  <div className="bg-slate-950/60 p-2 rounded border border-slate-800">
+                    <span className="text-slate-400 block">Holes Filled</span>
+                    <span className="text-emerald-400 font-bold text-xs">{repairReport.holes_filled}</span>
+                  </div>
+                  <div className="bg-slate-950/60 p-2 rounded border border-slate-800">
+                    <span className="text-slate-400 block">Degenerate Faces</span>
+                    <span className="text-amber-400 font-bold text-xs">-{repairReport.degenerate_faces_removed}</span>
+                  </div>
+                  <div className="bg-slate-950/60 p-2 rounded border border-slate-800">
+                    <span className="text-slate-400 block">Merged Vertices</span>
+                    <span className="text-cyan-400 font-bold text-xs">{repairReport.duplicate_vertices_welded}</span>
+                  </div>
+                  <div className="bg-slate-950/60 p-2 rounded border border-slate-800">
+                    <span className="text-slate-400 block">Final Volume</span>
+                    <span className="text-slate-100 font-bold text-xs">
+                      {repairReport.volume_restored_cm3 ? `${repairReport.volume_restored_cm3.toFixed(2)} cm³` : "Open Mesh"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-slate-400 border-t border-slate-800 pt-1.5 flex justify-between">
+                  <span>Triangles:</span>
+                  <span className="text-slate-200">{repairReport.triangle_count_before} &rarr; {repairReport.triangle_count_after}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Action Button */}
+            <button
+              onClick={handleRepair}
+              disabled={!mesh || isRepairing}
+              className="w-full py-2.5 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-bold rounded transition flex items-center justify-center space-x-2 disabled:opacity-50 shadow-md cursor-pointer"
+            >
+              {isRepairing ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Wrench className="w-4 h-4" />
+              )}
+              <span>Run Auto-Repair & Heal Mesh</span>
             </button>
           </div>
         )}

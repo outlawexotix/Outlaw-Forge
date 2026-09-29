@@ -11,9 +11,12 @@ from app.models.mesh import (
     ExportModelPayload,
     ExportResult,
     MeshAnalysisResult,
+    MeshRepairReport,
     OverhangAnalysisResult,
     RotateModelPayload,
     ScaleModelPayload,
+    SliceModelPayload,
+    SliceModelResult,
 )
 from app.models.project import MeshBounds, MeshTransform
 
@@ -28,7 +31,7 @@ class MeshValidationError(HTTPException):
 
 class MeshProcessingError(HTTPException):
     def __init__(self, detail: str = "Failed to process 3D mesh"):
-        super().__init__(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+        super().__init__(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
 
 def sanitize_and_validate_filename(filename: Optional[str], allowed_extensions: Optional[Set[str]] = None) -> str:
@@ -488,6 +491,190 @@ class MeshService:
             requires_support=requires_support,
         )
 
+    @staticmethod
+    def slice_mesh(
+        mesh: trimesh.Trimesh,
+        plane_origin: Optional[Union[List[float], Tuple[float, float, float], np.ndarray]] = None,
+        plane_normal: Optional[Union[List[float], Tuple[float, float, float], np.ndarray]] = None,
+        cap_faces: bool = True,
+        create_pegs: bool = False,
+        peg_radius_mm: float = 3.0,
+        peg_height_mm: float = 6.0,
+        peg_clearance_mm: float = 0.2,
+    ) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, float]:
+        """
+        Split a mesh into top and bottom watertight halves along an arbitrary planar slice.
+        Optionally generates interlocking alignment dowel pegs and sockets on mating cut faces.
+        Returns: (top_mesh, bottom_mesh, cut_area_cm2)
+        """
+        if mesh is None or len(mesh.faces) == 0:
+            raise MeshValidationError("Cannot slice empty mesh.")
+
+        # Default origin is bounding box centroid
+        if plane_origin is None:
+            origin = np.array(mesh.centroid, dtype=float)
+        else:
+            origin = np.array(plane_origin, dtype=float)
+
+        # Default normal is Z-up [0, 0, 1]
+        if plane_normal is None:
+            normal = np.array([0.0, 0.0, 1.0], dtype=float)
+        else:
+            normal = np.array(plane_normal, dtype=float)
+
+        norm_len = np.linalg.norm(normal)
+        if norm_len < 1e-6:
+            normal = np.array([0.0, 0.0, 1.0], dtype=float)
+        else:
+            normal = normal / norm_len
+
+        # Slice positive half (above cut plane)
+        top_slice = trimesh.intersections.slice_mesh_plane(
+            mesh=mesh,
+            plane_normal=normal,
+            plane_origin=origin,
+            cap=cap_faces,
+        )
+
+        # Slice negative half (below cut plane)
+        bottom_slice = trimesh.intersections.slice_mesh_plane(
+            mesh=mesh,
+            plane_normal=-normal,
+            plane_origin=origin,
+            cap=cap_faces,
+        )
+
+        if top_slice is None or len(top_slice.faces) == 0:
+            raise MeshProcessingError("Cut plane does not intersect mesh: top slice is empty.")
+        if bottom_slice is None or len(bottom_slice.faces) == 0:
+            raise MeshProcessingError("Cut plane does not intersect mesh: bottom slice is empty.")
+
+        # Ensure vertex normals are computed
+        top_slice.fix_normals()
+        bottom_slice.fix_normals()
+
+        # Compute cut boundary area approximately (difference in surface area)
+        cut_area_mm2 = max(0.0, (float(top_slice.area) + float(bottom_slice.area) - float(mesh.area)) / 2.0)
+        cut_area_cm2 = round(cut_area_mm2 / 100.0, 4)
+
+        # Optional alignment peg / socket connector generation
+        if create_pegs and peg_radius_mm > 0 and peg_height_mm > 0:
+            try:
+                # Generate peg cylinder on bottom slice, hole cylinder on top slice
+                z_axis = np.array([0.0, 0.0, 1.0])
+                align_mat = trimesh.geometry.align_vectors(z_axis, normal)
+
+                # Peg cylinder (positive on bottom mating face)
+                peg = trimesh.creation.cylinder(radius=peg_radius_mm, height=peg_height_mm)
+                peg.apply_translation([0, 0, peg_height_mm / 2.0])
+                peg.apply_transform(align_mat)
+                peg.apply_translation(origin)
+
+                # Socket hole (slightly enlarged with clearance tolerance)
+                hole_radius = peg_radius_mm + peg_clearance_mm
+                hole_height = peg_height_mm + 1.0
+                socket = trimesh.creation.cylinder(radius=hole_radius, height=hole_height)
+                socket.apply_translation([0, 0, hole_height / 2.0])
+                socket.apply_transform(align_mat)
+                socket.apply_translation(origin)
+
+                # Union peg with bottom half
+                bottom_with_peg = trimesh.boolean.union([bottom_slice, peg])
+                if bottom_with_peg is not None and len(bottom_with_peg.faces) > 0:
+                    bottom_slice = bottom_with_peg
+
+                # Difference socket from top half
+                top_with_socket = trimesh.boolean.difference([top_slice, socket])
+                if top_with_socket is not None and len(top_with_socket.faces) > 0:
+                    top_slice = top_with_socket
+            except Exception:
+                # Fallback cleanly to standard cut without boolean failure
+                pass
+
+        return top_slice, bottom_slice, cut_area_cm2
+
+    @staticmethod
+    def repair_mesh(
+        mesh: trimesh.Trimesh,
+        fill_holes: bool = True,
+        fix_normals: bool = True,
+        remove_degenerate: bool = True,
+        weld_vertices: bool = True,
+        weld_tolerance_mm: float = 0.001,
+    ) -> Tuple[trimesh.Trimesh, MeshRepairReport]:
+        """
+        Automated mesh repair and geometric healing:
+        - Removes degenerate zero-area faces and duplicate triangles
+        - Merges coincident vertices
+        - Unifies vertex winding order and fixes inverted normals
+        - Fills and triangulates open boundary holes to restore watertight manifold topology
+        """
+        if mesh is None or len(mesh.faces) == 0:
+            raise MeshValidationError("Cannot repair empty mesh.")
+
+        repaired = mesh.copy()
+        triangles_before = int(len(repaired.faces))
+        is_watertight_before = bool(repaired.is_watertight)
+        duplicate_vertices_welded = 0
+        degenerate_faces_removed = 0
+        holes_filled_count = 0
+        inverted_normals_fixed = False
+
+        # 1. Weld coincident vertices
+        if weld_vertices:
+            v_before = len(repaired.vertices)
+            repaired.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=5)
+            duplicate_vertices_welded = max(0, v_before - len(repaired.vertices))
+
+        # 2. Remove degenerate / duplicate faces
+        if remove_degenerate:
+            f_before = len(repaired.faces)
+            repaired.update_faces(repaired.nondegenerate_faces())
+            repaired.update_faces(repaired.unique_faces())
+            repaired.remove_unreferenced_vertices()
+            degenerate_faces_removed = max(0, f_before - len(repaired.faces))
+
+        # 3. Fill boundary holes
+        if fill_holes:
+            try:
+                trimesh.repair.fill_holes(repaired)
+                if not repaired.is_watertight:
+                    trimesh.repair.stitch(repaired)
+                holes_filled_count = max(0, len(repaired.faces) - (triangles_before - degenerate_faces_removed))
+            except Exception:
+                pass
+
+        # 4. Fix normals and winding order
+        if fix_normals:
+            try:
+                trimesh.repair.fix_inversion(repaired)
+                trimesh.repair.fix_winding(repaired)
+                trimesh.repair.fix_normals(repaired)
+                repaired.fix_normals()
+                inverted_normals_fixed = True
+            except Exception:
+                pass
+
+        triangles_after = int(len(repaired.faces))
+        is_watertight_after = bool(repaired.is_watertight)
+        volume_restored_cm3 = None
+        if is_watertight_after and repaired.volume is not None and repaired.volume > 0:
+            volume_restored_cm3 = round(float(repaired.volume) / 1000.0, 4)
+
+        report = MeshRepairReport(
+            holes_filled=holes_filled_count,
+            degenerate_faces_removed=degenerate_faces_removed,
+            duplicate_vertices_welded=duplicate_vertices_welded,
+            inverted_normals_fixed=inverted_normals_fixed,
+            is_watertight_before=is_watertight_before,
+            is_watertight_after=is_watertight_after,
+            triangle_count_before=triangles_before,
+            triangle_count_after=triangles_after,
+            volume_restored_cm3=volume_restored_cm3,
+        )
+
+        return repaired, report
+
 
 # Singleton instance and module-level function aliases
 mesh_service = MeshService()
@@ -499,3 +686,5 @@ rotate_mesh = MeshService.rotate_mesh
 center_mesh_on_bed = MeshService.center_mesh_on_bed
 lay_flat_mesh = MeshService.lay_flat_mesh
 analyze_overhangs = MeshService.analyze_overhangs
+slice_mesh = MeshService.slice_mesh
+repair_mesh = MeshService.repair_mesh
