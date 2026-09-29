@@ -1,0 +1,27 @@
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# CAD software temporary files
+*.~*
+*.tmp
+
+# OS
+Thumbs.db
