@@ -2,14 +2,14 @@
 
 import '@/lib/react-compat';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import { BuildPlate } from './BuildPlate';
 import { SceneLights } from './SceneLights';
 import { OrientationGizmo } from './OrientationGizmo';
-import { ModelRenderer } from './ModelRenderer';
+import { ModelRenderer, RenderMode } from './ModelRenderer';
 import { CuttingPlane } from './CuttingPlane';
 import { PrinterProfile, WorkingModel } from '@shared/types/api';
 import { PresetView, ViewportSettings } from '@shared/types/viewport';
@@ -17,7 +17,7 @@ import {
   BoundingBox3D,
   MeshMetrics,
   calculatePresetCameraView,
-  frameObjectInCamera,
+  PlateTextureType,
 } from '@three-tools';
 import {
   Box,
@@ -26,10 +26,14 @@ import {
   Layers,
   RotateCcw,
   Maximize2,
-  Compass,
   AlertCircle,
   Loader2,
   Crosshair,
+  Sparkles,
+  Slice,
+  ShieldAlert,
+  Paintbrush,
+  Sliders,
 } from 'lucide-react';
 
 const DEFAULT_PRINTER: PrinterProfile = {
@@ -59,7 +63,7 @@ export interface ViewportContainerProps {
   model?: WorkingModel | null;
   modelBuffer?: ArrayBuffer | null;
   modelUrl?: string | null;
-  activeTool?: 'select' | 'move' | 'rotate' | 'scale' | 'slice' | 'inspect';
+  activeTool?: 'select' | 'move' | 'rotate' | 'scale' | 'slice' | 'inspect' | 'lay_flat';
   slicePlaneOrigin?: [number, number, number];
   slicePlaneNormal?: [number, number, number];
   className?: string;
@@ -83,7 +87,6 @@ const BedRaycaster: React.FC<{
       onPointerMove={(e) => {
         e.stopPropagation();
         if (e.point) {
-          // Point in slicer coords (since inside SlicerSpaceRoot group)
           onHover({
             x: Math.round(e.point.x * 10) / 10,
             y: Math.round(e.point.y * 10) / 10,
@@ -113,6 +116,10 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
 }) => {
   const [settings, setSettings] = useState<ViewportSettings>(DEFAULT_SETTINGS);
   const [activeView, setActiveView] = useState<PresetView>('isometric');
+  const [plateType, setPlateType] = useState<PlateTextureType>('textured_pei');
+  const [renderMode, setRenderMode] = useState<RenderMode>('solid');
+  const [layerHeightMm, setLayerHeightMm] = useState<number>(0.20);
+  const [showExclusionZone, setShowExclusionZone] = useState<boolean>(true);
   const [modelMetrics, setModelMetrics] = useState<MeshMetrics | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -120,7 +127,6 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
 
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
-
 
   const bedWidth = printer.build_width_mm || 256;
   const bedDepth = printer.build_depth_mm || 256;
@@ -175,7 +181,6 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   // Global CAD Hotkeys (F for Frame, R for Reset, 1-4 for Views)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't capture when typing in text fields
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
         return;
       }
@@ -277,11 +282,13 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
 
         {/* Slicer Space Root Group: Rotation -90 deg (-PI/2) on X-axis maps Z-up to Three.js Y-up */}
         <group rotation={[-Math.PI / 2, 0, 0]} name="SlicerSpaceRoot">
-          {/* Build Plate Surface & Coordinate Grid */}
+          {/* OrcaSlicer Build Plate Surface & Procedural PEI Texture */}
           <BuildPlate
             printer={printer}
+            plateType={plateType}
             showEnvelope={settings.showEnvelope}
             showOrigin={settings.showOrigin}
+            showExclusionZone={showExclusionZone}
             majorStep={settings.gridMajorStepMm}
             minorStep={settings.gridMinorStepMm}
           />
@@ -293,6 +300,10 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
             modelUrl={modelUrl}
             printer={printer}
             activeTool={activeTool}
+            renderMode={renderMode}
+            layerHeightMm={layerHeightMm}
+            slicePlaneOrigin={slicePlaneOrigin}
+            slicePlaneNormal={slicePlaneNormal}
             showBoundingBox={settings.showBoundingBoxes}
             showWireframe={settings.showWireframe}
             onModelLoaded={handleModelLoaded}
@@ -312,7 +323,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
             />
           )}
 
-          {/* Interactive raycast ground plane (muted during gizmo dragging) */}
+          {/* Interactive raycast ground plane */}
           {onCursorCoordinates && !isGizmoDragging && (
             <BedRaycaster
               bedWidth={bedWidth}
@@ -322,12 +333,13 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
           )}
         </group>
 
-        {/* Orientation Gizmo / View Cube */}
+        {/* OrcaSlicer Orientation Gizmo / View Cube */}
         <OrientationGizmo alignment="top-right" margin={[70, 70]} />
       </Canvas>
 
-      {/* Floating HUD: Preset View Controls (Top-Left) */}
+      {/* Floating HUD: Preset View Controls & OrcaSlicer Toolbar (Top-Left) */}
       <div className="absolute top-3 left-4 flex flex-col gap-2 pointer-events-auto z-20">
+        {/* Preset Views */}
         <div className="flex items-center gap-1 p-1 bg-slate-950/85 backdrop-blur-md border border-slate-800/90 rounded-lg shadow-cad-panel text-xs text-slate-300">
           <button
             onClick={() => handlePresetView('isometric')}
@@ -398,7 +410,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
           </button>
         </div>
 
-        {/* View toggles */}
+        {/* View toggles & Orca Render Mode Switcher */}
         <div className="flex items-center gap-1.5 p-1 bg-slate-950/85 backdrop-blur-md border border-slate-800/90 rounded-lg shadow-cad-panel text-xs text-slate-400 w-fit">
           <button
             onClick={() => setSettings((s) => ({ ...s, showGrid: !s.showGrid }))}
@@ -423,7 +435,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
             className={`p-1.5 rounded transition ${
               settings.showBoundingBoxes ? 'text-cyan-400 bg-cyan-950/60 border border-cyan-500/30' : 'hover:text-white'
             }`}
-            title="Toggle Bounding Box"
+            title="Toggle Bounding Box & 3D Dimension Tags"
           >
             <Layers className="w-3.5 h-3.5" />
           </button>
@@ -445,8 +457,108 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
           >
             <Crosshair className="w-3.5 h-3.5" />
           </button>
+          <button
+            onClick={() => setShowExclusionZone((v) => !v)}
+            className={`p-1.5 rounded transition ${
+              showExclusionZone ? 'text-amber-400 bg-amber-950/60 border border-amber-500/30' : 'hover:text-white'
+            }`}
+            title="Toggle Nozzle Wipe Exclusion Zone"
+          >
+            <ShieldAlert className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="w-[1px] h-4 bg-slate-800 mx-1" />
+
+          {/* Render Mode Selectors */}
+          <div className="flex items-center gap-1 font-mono text-[11px]">
+            <button
+              onClick={() => setRenderMode('solid')}
+              className={`px-2 py-0.5 rounded transition ${
+                renderMode === 'solid'
+                  ? 'bg-slate-800 text-cyan-300 font-semibold border border-slate-700'
+                  : 'hover:text-white text-slate-400'
+              }`}
+            >
+              Solid
+            </button>
+            <button
+              onClick={() => setRenderMode('layer_lines')}
+              className={`px-2 py-0.5 rounded transition ${
+                renderMode === 'layer_lines'
+                  ? 'bg-slate-800 text-cyan-300 font-semibold border border-slate-700'
+                  : 'hover:text-white text-slate-400'
+              }`}
+            >
+              Layers
+            </button>
+            <button
+              onClick={() => setRenderMode('overhangs')}
+              className={`px-2 py-0.5 rounded transition ${
+                renderMode === 'overhangs'
+                  ? 'bg-amber-900/60 text-amber-300 font-semibold border border-amber-600/40'
+                  : 'hover:text-white text-slate-400'
+              }`}
+            >
+              Overhangs
+            </button>
+          </div>
+        </div>
+
+        {/* OrcaSlicer Plate Selector Bar */}
+        <div className="flex items-center gap-1.5 p-1 bg-slate-950/85 backdrop-blur-md border border-slate-800/90 rounded-lg shadow-cad-panel text-[11px] font-mono text-slate-400 w-fit">
+          <Paintbrush className="w-3.5 h-3.5 text-slate-400 ml-1" />
+          <span className="text-slate-500 text-[10px]">Plate:</span>
+          <button
+            onClick={() => setPlateType('textured_pei')}
+            className={`px-2 py-0.5 rounded transition ${
+              plateType === 'textured_pei'
+                ? 'bg-amber-500/20 text-amber-300 font-semibold border border-amber-500/40'
+                : 'hover:text-slate-200'
+            }`}
+          >
+            Gold PEI
+          </button>
+          <button
+            onClick={() => setPlateType('smooth_pei')}
+            className={`px-2 py-0.5 rounded transition ${
+              plateType === 'smooth_pei'
+                ? 'bg-slate-800 text-slate-200 font-semibold border border-slate-700'
+                : 'hover:text-slate-200'
+            }`}
+          >
+            Smooth PEI
+          </button>
+          <button
+            onClick={() => setPlateType('cool_plate')}
+            className={`px-2 py-0.5 rounded transition ${
+              plateType === 'cool_plate'
+                ? 'bg-cyan-950/60 text-cyan-300 font-semibold border border-cyan-600/40'
+                : 'hover:text-slate-200'
+            }`}
+          >
+            Cool Plate
+          </button>
+          <button
+            onClick={() => setPlateType('engineering_plate')}
+            className={`px-2 py-0.5 rounded transition ${
+              plateType === 'engineering_plate'
+                ? 'bg-slate-800 text-slate-300 font-semibold border border-slate-700'
+                : 'hover:text-slate-200'
+            }`}
+          >
+            Eng Plate
+          </button>
         </div>
       </div>
+
+      {/* OrcaSlicer Lay on Face Active Instructions Banner */}
+      {activeTool === 'lay_flat' && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-cyan-950/90 border border-cyan-500/50 rounded-lg px-4 py-1.5 shadow-glow-cyan text-xs font-mono text-cyan-200 flex items-center gap-2 z-20 animate-pulse">
+          <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+          <span className="font-bold text-cyan-300">LAY ON FACE TOOL ACTIVE</span>
+          <span className="text-[11px] text-cyan-400/80">| Click any flat surface on the model to snap flush to bed</span>
+        </div>
+      )}
 
       {/* Overhang Inspection HUD banner */}
       {activeTool === 'inspect' && (

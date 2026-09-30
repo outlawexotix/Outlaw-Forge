@@ -381,6 +381,34 @@ export default function WorkbenchPage() {
     []
   );
 
+  // Handle Live Transform Changes from Viewport Gizmos / Lay on Face
+  const handleViewportTransformChange = useCallback(
+    (transform: { position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] }) => {
+      if (!activeWorkingModel) return;
+      setActiveProject((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          working_models: prev.working_models.map((m) =>
+            m.id === activeWorkingModel.id
+              ? {
+                  ...m,
+                  transform: {
+                    ...m.transform,
+                    position_mm: transform.position,
+                    rotation_deg: transform.rotation,
+                    scale_factors: transform.scale,
+                  },
+                }
+              : m
+          ),
+        };
+      });
+      setSaveStatus("unsaved");
+    },
+    [activeWorkingModel]
+  );
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#090d16] text-slate-100 font-sans select-none">
       {/* 1. Header Bar */}
@@ -421,10 +449,12 @@ export default function WorkbenchPage() {
             activeTool={activeTool}
             slicePlaneOrigin={slicePlaneOrigin}
             slicePlaneNormal={slicePlaneNormal}
+            onTransformChange={handleViewportTransformChange}
             onCursorCoordinates={(coords: { x: number; y: number; z: number }) => setCursorCoords(coords)}
             className="w-full h-full"
           />
         </main>
+
 
         {/* Right Inspector & Stats Panel */}
         <Inspector
