@@ -9,6 +9,7 @@ import { CreateProjectDialog } from "@/components/project/CreateProjectDialog";
 import { CreatePrinterDialog } from "@/components/project/CreatePrinterDialog";
 import { ProjectListDialog } from "@/components/project/ProjectListDialog";
 import { ImportModelDialog } from "@/components/project/ImportModelDialog";
+import { CalibrationDialog } from "@/components/project/CalibrationDialog";
 import { apiClient } from "@/lib/api-client";
 import { 
   HealthStatusResponse, 
@@ -75,6 +76,8 @@ export default function WorkbenchPage() {
   const [isListDialogOpen, setIsListDialogOpen] = useState<boolean>(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState<boolean>(false);
   const [isCreatePrinterDialogOpen, setIsCreatePrinterDialogOpen] = useState<boolean>(false);
+  const [isCalibrationDialogOpen, setIsCalibrationDialogOpen] = useState<boolean>(false);
+
 
 
   // Active Tool & Viewport settings
@@ -333,6 +336,51 @@ export default function WorkbenchPage() {
     }
   };
 
+  // Handle Auto-Arrange multi-model nesting
+  const handleAutoArrange = async () => {
+    if (!activeProject || !activeProject.working_models || activeProject.working_models.length === 0) {
+      alert("No models on the build plate to arrange.");
+      return;
+    }
+    try {
+      const res = await apiClient.autoArrange(activeProject.id, {
+        spacing_mm: 10.0,
+        bed_width_mm: activePrinter.build_width_mm,
+        bed_depth_mm: activePrinter.build_depth_mm,
+      });
+      if (res.arranged_models && res.arranged_models.length > 0) {
+        setActiveProject((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            working_models: res.arranged_models,
+          };
+        });
+        setActiveModelBuffer(null);
+        setSaveStatus("saved");
+        handleRefreshOperations();
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Auto-arrange failed";
+      alert(msg);
+    }
+  };
+
+  // Handle Slice Plane Changed
+  const handleSlicePlaneChange = useCallback(
+    (origin: [number, number, number], normal: [number, number, number]) => {
+      setSlicePlaneOrigin((prev) => {
+        if (prev[0] === origin[0] && prev[1] === origin[1] && prev[2] === origin[2]) return prev;
+        return origin;
+      });
+      setSlicePlaneNormal((prev) => {
+        if (prev[0] === normal[0] && prev[1] === normal[1] && prev[2] === normal[2]) return prev;
+        return normal;
+      });
+    },
+    []
+  );
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#090d16] text-slate-100 font-sans select-none">
       {/* 1. Header Bar */}
@@ -346,6 +394,8 @@ export default function WorkbenchPage() {
         onOpenProjectList={() => setIsListDialogOpen(true)}
         onSaveProject={handleSaveActiveProject}
         onImportClick={() => setIsImportDialogOpen(true)}
+        onOpenCalibration={() => setIsCalibrationDialogOpen(true)}
+        onAutoArrange={handleAutoArrange}
       />
 
       {/* 2. Main CAD Workbench Body */}
@@ -387,10 +437,7 @@ export default function WorkbenchPage() {
           onOpenCreatePrinter={() => setIsCreatePrinterDialogOpen(true)}
           onModelUpdated={handleModelUpdated}
           onModelSliced={handleModelSliced}
-          onSlicePlaneChange={(origin, normal) => {
-            setSlicePlaneOrigin(origin);
-            setSlicePlaneNormal(normal);
-          }}
+          onSlicePlaneChange={handleSlicePlaneChange}
           onOperationRecorded={handleRefreshOperations}
         />
       </div>
@@ -439,6 +486,13 @@ export default function WorkbenchPage() {
         onClose={() => setIsImportDialogOpen(false)}
         projectId={activeProject?.id || ""}
         onModelImported={handleModelImported}
+      />
+
+      <CalibrationDialog
+        isOpen={isCalibrationDialogOpen}
+        onClose={() => setIsCalibrationDialogOpen(false)}
+        projectId={activeProject?.id || ""}
+        onModelGenerated={handleModelImported}
       />
     </div>
   );

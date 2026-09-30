@@ -1,5 +1,6 @@
 'use client';
 
+import '@/lib/react-compat';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';

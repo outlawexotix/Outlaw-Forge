@@ -1,3 +1,4 @@
+import "@/lib/react-compat";
 import type { Metadata } from "next";
 import "./globals.css";
 

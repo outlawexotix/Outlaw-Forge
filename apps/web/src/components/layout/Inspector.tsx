@@ -6,14 +6,19 @@ import {
   PrinterProfile, 
   PrintabilityAnalysis, 
   OperationRecord,
-  ScaleModelPayload,
+  ScaleModelPayload, 
   ExportModelPayload,
   OverhangAnalysis,
   SliceModelPayload,
   SliceModelResult,
   MeshRepairReport,
   RepairModelPayload,
-  RepairModelResult
+  RepairModelResult,
+  FilamentProfile,
+  CostEstimationResult,
+  AdaptiveLayerResult,
+  MouseEarResult,
+  AutoOrientResult
 } from "@shared/types/api";
 import { formatNumber } from "@/lib/utils";
 import { apiClient } from "@/lib/api-client";
@@ -24,7 +29,7 @@ import {
   ShieldCheck, 
   AlertTriangle, 
   Compass, 
-  Maximize2,
+  Maximize2, 
   Download,
   History,
   Lock,
@@ -41,7 +46,13 @@ import {
   SplitSquareVertical,
   Wrench,
   Sparkles,
-  CheckCheck
+  CheckCheck,
+  Zap,
+  Coins,
+  Scale,
+  Maximize,
+  RotateCcw,
+  CircleDot
 } from "lucide-react";
 
 interface InspectorProps {
@@ -59,7 +70,7 @@ interface InspectorProps {
   onOperationRecorded?: () => void;
 }
 
-type TabType = "dimensions" | "transform" | "slice" | "repair" | "printability" | "export" | "history";
+type TabType = "dimensions" | "transform" | "orca" | "slice" | "repair" | "printability" | "export" | "history";
 
 export function Inspector({
   projectId,
@@ -90,6 +101,7 @@ export function Inspector({
   // CAD Alignment state
   const [isCentering, setIsCentering] = useState(false);
   const [isLayingFlat, setIsLayingFlat] = useState(false);
+  const [isAutoOrienting, setIsAutoOrienting] = useState(false);
   const [alignMessage, setAlignMessage] = useState<string | null>(null);
 
   // Rotation state
@@ -102,6 +114,27 @@ export function Inspector({
   // Overhang Analysis state
   const [overhangData, setOverhangData] = useState<OverhangAnalysis | null>(null);
   const [isLoadingOverhangs, setIsLoadingOverhangs] = useState(false);
+
+  // OrcaSlicer Mouse-Ear Brim state
+  const [earRadius, setEarRadius] = useState<number>(8.0);
+  const [earThickness, setEarThickness] = useState<number>(0.2);
+  const [isGeneratingEars, setIsGeneratingEars] = useState(false);
+  const [earMessage, setEarMessage] = useState<string | null>(null);
+
+  // OrcaSlicer Adaptive Layer Height state
+  const [minLayerH, setMinLayerH] = useState<number>(0.08);
+  const [maxLayerH, setMaxLayerH] = useState<number>(0.28);
+  const [nomLayerH, setNomLayerH] = useState<number>(0.20);
+  const [isProfilingLayers, setIsProfilingLayers] = useState(false);
+  const [adaptiveResult, setAdaptiveResult] = useState<AdaptiveLayerResult | null>(null);
+
+  // OrcaSlicer Filament & Cost Estimation state
+  const [filaments, setFilaments] = useState<FilamentProfile[]>([]);
+  const [selectedFilamentId, setSelectedFilamentId] = useState<string>("generic_pla");
+  const [infillPct, setInfillPct] = useState<number>(15);
+  const [wallCount, setWallCount] = useState<number>(3);
+  const [isEstimatingCost, setIsEstimatingCost] = useState(false);
+  const [costResult, setCostResult] = useState<CostEstimationResult | null>(null);
 
   // Export state
   const [exportFormat, setExportFormat] = useState<"stl" | "obj" | "glb">("stl");
@@ -147,13 +180,14 @@ export function Inspector({
   const fitsInBed = fitsX && fitsY && fitsZ;
 
   // Sync slice position when active model changes
+  const meshHeight = mesh?.bounds?.dimensions_mm?.[2] ?? 50;
   useEffect(() => {
     if (mesh) {
-      if (sliceAxis === "Z") setSlicePos(Math.round((dims[2] / 2) * 10) / 10);
+      if (sliceAxis === "Z") setSlicePos(Math.round((meshHeight / 2) * 10) / 10);
       else if (sliceAxis === "X") setSlicePos(0);
       else if (sliceAxis === "Y") setSlicePos(0);
     }
-  }, [mesh, sliceAxis, dims]);
+  }, [mesh?.id, sliceAxis, meshHeight]);
 
   // Sync 3D cutting plane in viewport
   useEffect(() => {
@@ -162,16 +196,16 @@ export function Inspector({
     let origin: [number, number, number] = [0, 0, slicePos];
     if (sliceAxis === "X") {
       normal = [1, 0, 0];
-      origin = [slicePos, 0, (dims[2] || 50) / 2];
+      origin = [slicePos, 0, meshHeight / 2];
     } else if (sliceAxis === "Y") {
       normal = [0, 1, 0];
-      origin = [0, slicePos, (dims[2] || 50) / 2];
+      origin = [0, slicePos, meshHeight / 2];
     } else {
       normal = [0, 0, 1];
       origin = [0, 0, slicePos];
     }
     onSlicePlaneChange(origin, normal);
-  }, [sliceAxis, slicePos, onSlicePlaneChange, dims]);
+  }, [sliceAxis, slicePos, onSlicePlaneChange, meshHeight]);
 
   // Sync dimension inputs when mesh changes or scale updates
   useEffect(() => {
@@ -244,6 +278,163 @@ export function Inspector({
       setTimeout(() => setAlignMessage(null), 3000);
     } finally {
       setIsLayingFlat(false);
+    }
+  };
+
+  const handleAutoOrient = async () => {
+    if (!mesh || !projectId) return;
+    setIsAutoOrienting(true);
+    setAlignMessage(null);
+    try {
+      const res = await apiClient.autoOrient(projectId, mesh.id);
+      if (onModelUpdated) onModelUpdated(res.oriented_model);
+      if (onOperationRecorded) onOperationRecorded();
+      setAlignMessage(`Auto-oriented! Support area reduced by ${res.reduction_percentage.toFixed(1)}%`);
+      setTimeout(() => setAlignMessage(null), 3500);
+    } catch (err: any) {
+      setAlignMessage(`Auto-orient error: ${err.message}`);
+      setTimeout(() => setAlignMessage(null), 3000);
+    } finally {
+      setIsAutoOrienting(false);
+    }
+  };
+
+  const handleFitToBed = async () => {
+    if (!mesh || !projectId) return;
+    const currX = dims[0] || 1;
+    const currY = dims[1] || 1;
+    const currZ = dims[2] || 1;
+    const margin = 10;
+    const scaleX = (bedW - margin) / currX;
+    const scaleY = (bedD - margin) / currY;
+    const scaleZ = (bedH - margin) / currZ;
+    const maxFactor = Math.min(scaleX, scaleY, scaleZ);
+    const targetPct = Math.max(1, Math.round(maxFactor * 100));
+    setUniformPercent(targetPct);
+    setIsScaling(true);
+    try {
+      const updated = await apiClient.scaleModel(projectId, mesh.id, {
+        uniform_scale_percent: targetPct,
+        preserve_aspect_ratio: true,
+      });
+      if (onModelUpdated) onModelUpdated(updated);
+      if (onOperationRecorded) onOperationRecorded();
+      setScaleMessage(`Fitted to build volume at ${targetPct}% scale`);
+      setTimeout(() => setScaleMessage(null), 3000);
+    } catch (err: any) {
+      setScaleMessage(`Scale error: ${err.message}`);
+    } finally {
+      setIsScaling(false);
+    }
+  };
+
+  const handleQuickScaleHeight = async (h: number) => {
+    if (!mesh || !projectId) return;
+    setTargetHeight(h);
+    setIsScaling(true);
+    try {
+      const updated = await apiClient.scaleModel(projectId, mesh.id, {
+        target_height_mm: h,
+        preserve_aspect_ratio: true,
+      });
+      if (onModelUpdated) onModelUpdated(updated);
+      if (onOperationRecorded) onOperationRecorded();
+      setScaleMessage(`Scaled height to ${h}mm (Aspect Locked)`);
+      setTimeout(() => setScaleMessage(null), 3000);
+    } catch (err: any) {
+      setScaleMessage(`Scale error: ${err.message}`);
+    } finally {
+      setIsScaling(false);
+    }
+  };
+
+  const handleResetScale = async () => {
+    if (!mesh || !projectId) return;
+    setUniformPercent(100);
+    setIsScaling(true);
+    try {
+      const updated = await apiClient.scaleModel(projectId, mesh.id, {
+        uniform_scale_percent: 100,
+        preserve_aspect_ratio: true,
+      });
+      if (onModelUpdated) onModelUpdated(updated);
+      if (onOperationRecorded) onOperationRecorded();
+      setScaleMessage("Scale reset to 100% (1.0x)");
+      setTimeout(() => setScaleMessage(null), 3000);
+    } catch (err: any) {
+      setScaleMessage(`Reset error: ${err.message}`);
+    } finally {
+      setIsScaling(false);
+    }
+  };
+
+  // Load filament presets on mount
+  useEffect(() => {
+    async function loadFilaments() {
+      if (!projectId) return;
+      try {
+        const list = await apiClient.listFilaments(projectId);
+        setFilaments(list);
+      } catch (err) {
+        console.warn("Could not load filaments:", err);
+      }
+    }
+    loadFilaments();
+  }, [projectId]);
+
+  const handleGenerateMouseEars = async () => {
+    if (!mesh || !projectId) return;
+    setIsGeneratingEars(true);
+    setEarMessage(null);
+    try {
+      const res = await apiClient.generateMouseEars(projectId, mesh.id, {
+        radius_mm: earRadius,
+        thickness_mm: earThickness,
+        auto_detect_corners: true,
+      });
+      if (onModelUpdated) onModelUpdated(res.modified_model);
+      if (onOperationRecorded) onOperationRecorded();
+      setEarMessage(`Generated ${res.ears_added_count} anti-warping mouse-ear tabs!`);
+      setTimeout(() => setEarMessage(null), 4000);
+    } catch (err: any) {
+      setEarMessage(`Failed: ${err.message}`);
+    } finally {
+      setIsGeneratingEars(false);
+    }
+  };
+
+  const handleComputeAdaptiveLayers = async () => {
+    if (!mesh || !projectId) return;
+    setIsProfilingLayers(true);
+    try {
+      const res = await apiClient.computeAdaptiveLayers(projectId, mesh.id, {
+        min_layer_height_mm: minLayerH,
+        max_layer_height_mm: maxLayerH,
+        nominal_layer_height_mm: nomLayerH,
+      });
+      setAdaptiveResult(res);
+      if (onOperationRecorded) onOperationRecorded();
+    } catch (err: any) {
+      alert(`Adaptive layer profiling failed: ${err.message}`);
+    } finally {
+      setIsProfilingLayers(false);
+    }
+  };
+
+  const handleEstimateCost = async () => {
+    if (!mesh || !projectId) return;
+    setIsEstimatingCost(true);
+    try {
+      const res = await apiClient.estimateCost(projectId, mesh.id, {
+        filament_id: selectedFilamentId,
+        infill_percentage: infillPct,
+        wall_count: wallCount,
+      });
+      setCostResult(res);
+    } catch (err: any) {
+      alert(`Cost estimation failed: ${err.message}`);
+    } finally {
+      setIsEstimatingCost(false);
     }
   };
 
@@ -445,6 +636,19 @@ export function Inspector({
         </button>
 
         <button
+          onClick={() => setActiveTab("orca")}
+          className={`flex-1 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 ${
+            activeTab === "orca"
+              ? "border-cyan-400 text-cyan-300 bg-cyan-950/20"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+          title="OrcaSlicer Studio Features (Mouse-Ears, Adaptive Layers, Cost Calculator)"
+        >
+          <Sparkles className="w-3 h-3 text-cyan-400" />
+          <span>Orca</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab("slice")}
           className={`flex-1 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 ${
             activeTab === "slice"
@@ -642,37 +846,49 @@ export function Inspector({
             {/* Quick Bed Alignment Actions */}
             <div className="space-y-2">
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                CAD Bed Alignment
+                CAD Bed & Orientation Tools
               </span>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 <button
                   onClick={handleCenterBed}
                   disabled={!mesh || isCentering}
-                  className="p-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-cyan-500/50 rounded-lg flex flex-col items-center justify-center space-y-1 transition text-slate-200 disabled:opacity-50"
+                  className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-cyan-500/50 rounded-lg flex flex-col items-center justify-center space-y-1 transition text-slate-200 disabled:opacity-50"
                   title="Center model in XY build volume and place base at Z=0"
                 >
                   {isCentering ? (
-                    <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />
+                    <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
                   ) : (
-                    <AlignCenter className="w-4 h-4 text-cyan-400" />
+                    <AlignCenter className="w-3.5 h-3.5 text-cyan-400" />
                   )}
-                  <span className="text-[11px] font-bold">Center Bed</span>
-                  <span className="text-[9px] text-slate-400">(X/Y Center, Z=0)</span>
+                  <span className="text-[10px] font-bold">Center Bed</span>
                 </button>
 
                 <button
                   onClick={handleLayFlat}
                   disabled={!mesh || isLayingFlat}
-                  className="p-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-cyan-500/50 rounded-lg flex flex-col items-center justify-center space-y-1 transition text-slate-200 disabled:opacity-50"
+                  className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-cyan-500/50 rounded-lg flex flex-col items-center justify-center space-y-1 transition text-slate-200 disabled:opacity-50"
                   title="Orient largest face flat onto build plate surface"
                 >
                   {isLayingFlat ? (
-                    <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />
+                    <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
                   ) : (
-                    <ArrowDownToLine className="w-4 h-4 text-cyan-400" />
+                    <ArrowDownToLine className="w-3.5 h-3.5 text-cyan-400" />
                   )}
-                  <span className="text-[11px] font-bold">Lay Flat</span>
-                  <span className="text-[9px] text-slate-400">(Auto-Orient Base)</span>
+                  <span className="text-[10px] font-bold">Lay Flat</span>
+                </button>
+
+                <button
+                  onClick={handleAutoOrient}
+                  disabled={!mesh || isAutoOrienting}
+                  className="p-2 bg-gradient-to-br from-cyan-950/40 to-blue-950/40 hover:from-cyan-900/60 hover:to-blue-900/60 border border-cyan-500/40 rounded-lg flex flex-col items-center justify-center space-y-1 transition text-cyan-300 disabled:opacity-50"
+                  title="OrcaSlicer Auto-Orient: Evaluates multi-axis normals to minimize supports and print time"
+                >
+                  {isAutoOrienting ? (
+                    <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                  )}
+                  <span className="text-[10px] font-bold">Auto-Orient</span>
                 </button>
               </div>
 
@@ -685,7 +901,7 @@ export function Inspector({
 
             <div className="w-full h-[1px] bg-slate-800" />
 
-            {/* Deterministic Rotation Section */}
+            {/* Rotation Controls */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
@@ -697,7 +913,7 @@ export function Inspector({
 
               {/* Quick Step Buttons per Axis */}
               <div className="space-y-2">
-                {/* X Axis Rotation */}
+                {/* X Axis */}
                 <div className="bg-slate-900/80 border border-slate-800/80 rounded-lg p-2 space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-rose-400">X AXIS (WIDTH)</span>
@@ -707,21 +923,21 @@ export function Inspector({
                     <button
                       onClick={() => handleStepRotate('x', -90)}
                       disabled={!mesh || isRotating}
-                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
+                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
                     >
                       -90° X
                     </button>
                     <button
                       onClick={() => handleStepRotate('x', 90)}
                       disabled={!mesh || isRotating}
-                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
+                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
                     >
                       +90° X
                     </button>
                   </div>
                 </div>
 
-                {/* Y Axis Rotation */}
+                {/* Y Axis */}
                 <div className="bg-slate-900/80 border border-slate-800/80 rounded-lg p-2 space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-emerald-400">Y AXIS (DEPTH)</span>
@@ -731,21 +947,21 @@ export function Inspector({
                     <button
                       onClick={() => handleStepRotate('y', -90)}
                       disabled={!mesh || isRotating}
-                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
+                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
                     >
                       -90° Y
                     </button>
                     <button
                       onClick={() => handleStepRotate('y', 90)}
                       disabled={!mesh || isRotating}
-                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
+                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
                     >
                       +90° Y
                     </button>
                   </div>
                 </div>
 
-                {/* Z Axis Rotation */}
+                {/* Z Axis */}
                 <div className="bg-slate-900/80 border border-slate-800/80 rounded-lg p-2 space-y-1.5">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold text-cyan-400">Z AXIS (HEIGHT / BED)</span>
@@ -755,188 +971,386 @@ export function Inspector({
                     <button
                       onClick={() => handleStepRotate('z', -90)}
                       disabled={!mesh || isRotating}
-                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
+                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
                     >
                       -90° Z
                     </button>
                     <button
                       onClick={() => handleStepRotate('z', 90)}
                       disabled={!mesh || isRotating}
-                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
+                      className="py-1 px-2 bg-slate-800 hover:bg-slate-700 rounded text-[10px] font-mono font-bold text-slate-200 border border-slate-700/60 transition disabled:opacity-50"
                     >
                       +90° Z
                     </button>
                   </div>
                 </div>
               </div>
-
-              {/* Custom Degree Input Fields */}
-              <div className="grid grid-cols-3 gap-1.5 pt-1">
-                <div>
-                  <label className="text-[9px] text-rose-400 font-bold block mb-1">X Deg (°)</label>
-                  <input
-                    type="number"
-                    step="15"
-                    value={rotX}
-                    onChange={(e) => setRotX(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-slate-100 text-xs focus:outline-none focus:border-rose-400"
-                  />
-                </div>
-                <div>
-                  <label className="text-[9px] text-emerald-400 font-bold block mb-1">Y Deg (°)</label>
-                  <input
-                    type="number"
-                    step="15"
-                    value={rotY}
-                    onChange={(e) => setRotY(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-slate-100 text-xs focus:outline-none focus:border-emerald-400"
-                  />
-                </div>
-                <div>
-                  <label className="text-[9px] text-cyan-400 font-bold block mb-1">Z Deg (°)</label>
-                  <input
-                    type="number"
-                    step="15"
-                    value={rotZ}
-                    onChange={(e) => setRotZ(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-slate-100 text-xs focus:outline-none focus:border-cyan-400"
-                  />
-                </div>
-              </div>
-
-              {rotateMessage && (
-                <p className="text-[10px] text-cyan-300 bg-cyan-950/40 border border-cyan-500/30 p-1.5 rounded text-center">
-                  {rotateMessage}
-                </p>
-              )}
-
-              <button
-                onClick={() => handleRotate()}
-                disabled={!mesh || isRotating}
-                className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 border border-cyan-500/40 text-cyan-300 font-bold rounded transition flex items-center justify-center space-x-1.5 text-xs disabled:opacity-50"
-              >
-                {isRotating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCw className="w-3.5 h-3.5" />}
-                <span>Apply Angle Rotation</span>
-              </button>
             </div>
 
             <div className="w-full h-[1px] bg-slate-800" />
 
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Deterministic Scaling
-              </span>
-              <span className="text-[10px] text-cyan-400">UNIT: MM</span>
-            </div>
+            {/* OrcaSlicer Advanced Scaling Section */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Precision Scaling
+                </span>
+                <button
+                  onClick={handleFitToBed}
+                  disabled={!mesh || isScaling}
+                  className="px-2 py-0.5 bg-cyan-950/80 hover:bg-cyan-900/80 border border-cyan-600/50 rounded text-[10px] font-bold text-cyan-300 flex items-center gap-1 transition disabled:opacity-50"
+                  title="Scale model uniformly to maximize current printer build volume"
+                >
+                  <Maximize className="w-3 h-3" />
+                  <span>Fit to Bed</span>
+                </button>
+              </div>
 
-            <div className="grid grid-cols-2 gap-2 bg-slate-900/60 p-1 rounded border border-slate-800">
-              <button
-                onClick={() => setScaleMode("percent")}
-                className={`py-1 text-xs rounded transition ${
-                  scaleMode === "percent" ? "bg-cyan-600 text-slate-950 font-bold" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Percentage (%)
-              </button>
-              <button
-                onClick={() => setScaleMode("dimensions")}
-                className={`py-1 text-xs rounded transition ${
-                  scaleMode === "dimensions" ? "bg-cyan-600 text-slate-950 font-bold" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Target Dimension
-              </button>
-            </div>
+              {/* Scale Quick Presets */}
+              <div className="grid grid-cols-5 gap-1">
+                {[25, 50, 75, 100, 150].map((h) => (
+                  <button
+                    key={h}
+                    onClick={() => handleQuickScaleHeight(h)}
+                    disabled={!mesh || isScaling}
+                    className="py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 rounded text-[9px] font-mono text-slate-300 disabled:opacity-50"
+                  >
+                    {h}mm Z
+                  </button>
+                ))}
+              </div>
 
-            {scaleMode === "percent" ? (
-              <div className="space-y-2">
-                <label className="text-slate-400 text-[11px]">Uniform Scale Factor (%)</label>
-                <div className="flex items-center space-x-2">
+              <div className="grid grid-cols-2 gap-2 bg-slate-900/60 p-1 rounded border border-slate-800">
+                <button
+                  onClick={() => setScaleMode("percent")}
+                  className={`py-1 text-xs rounded transition ${
+                    scaleMode === "percent" ? "bg-cyan-600 text-slate-950 font-bold" : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  Percentage (%)
+                </button>
+                <button
+                  onClick={() => setScaleMode("dimensions")}
+                  className={`py-1 text-xs rounded transition ${
+                    scaleMode === "dimensions" ? "bg-cyan-600 text-slate-950 font-bold" : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  Target Dimension
+                </button>
+              </div>
+
+              {scaleMode === "percent" ? (
+                <div className="space-y-2">
+                  <label className="text-slate-400 text-[11px]">Uniform Scale Factor (%)</label>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      step="5"
+                      value={uniformPercent}
+                      onChange={(e) => setUniformPercent(parseFloat(e.target.value) || 100)}
+                      className="flex-1 bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
+                    />
+                    <button
+                      onClick={handleResetScale}
+                      className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs flex items-center gap-1"
+                      title="Reset Scale to 100%"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>100%</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-slate-400 text-[11px]">Target Height Z (mm)</label>
+                    <button
+                      onClick={() => setPreserveAspect(!preserveAspect)}
+                      className={`flex items-center space-x-1 text-[10px] px-1.5 py-0.5 rounded border transition ${
+                        preserveAspect
+                          ? "bg-cyan-950/40 text-cyan-300 border-cyan-500/40"
+                          : "bg-slate-800 text-slate-400 border-slate-700"
+                      }`}
+                    >
+                      {preserveAspect ? <Lock className="w-2.5 h-2.5" /> : <Unlock className="w-2.5 h-2.5" />}
+                      <span>{preserveAspect ? "Aspect Locked" : "Free Axis"}</span>
+                    </button>
+                  </div>
                   <input
                     type="number"
-                    min="1"
-                    max="10000"
-                    step="5"
-                    value={uniformPercent}
-                    onChange={(e) => setUniformPercent(parseFloat(e.target.value) || 100)}
-                    className="flex-1 bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
+                    min="0.1"
+                    step="1"
+                    value={targetHeight}
+                    onChange={(e) => setTargetHeight(parseFloat(e.target.value) || 1)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
                   />
-                  <button
-                    onClick={() => setUniformPercent(100)}
-                    className="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs"
-                  >
-                    100%
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="text-slate-400 text-[11px]">Target Height Z (mm)</label>
-                  <button
-                    onClick={() => setPreserveAspect(!preserveAspect)}
-                    className={`flex items-center space-x-1 text-[10px] px-1.5 py-0.5 rounded border transition ${
-                      preserveAspect
-                        ? "bg-cyan-950/40 text-cyan-300 border-cyan-500/40"
-                        : "bg-slate-800 text-slate-400 border-slate-700"
-                    }`}
-                  >
-                    {preserveAspect ? <Lock className="w-2.5 h-2.5" /> : <Unlock className="w-2.5 h-2.5" />}
-                    <span>{preserveAspect ? "Aspect Locked" : "Free Axis"}</span>
-                  </button>
-                </div>
-                <input
-                  type="number"
-                  min="0.1"
-                  step="1"
-                  value={targetHeight}
-                  onChange={(e) => setTargetHeight(parseFloat(e.target.value) || 1)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
-                />
 
-                {!preserveAspect && (
-                  <>
-                    <div className="space-y-1">
-                      <label className="text-slate-400 text-[11px]">Target Width X (mm)</label>
-                      <input
-                        type="number"
-                        min="0.1"
-                        step="1"
-                        value={targetWidth}
-                        onChange={(e) => setTargetWidth(parseFloat(e.target.value) || 1)}
-                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-slate-400 text-[11px]">Target Depth Y (mm)</label>
-                      <input
-                        type="number"
-                        min="0.1"
-                        step="1"
-                        value={targetDepth}
-                        onChange={(e) => setTargetDepth(parseFloat(e.target.value) || 1)}
-                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
+                  {!preserveAspect && (
+                    <>
+                      <div className="space-y-1">
+                        <label className="text-slate-400 text-[11px]">Target Width X (mm)</label>
+                        <input
+                          type="number"
+                          min="0.1"
+                          step="1"
+                          value={targetWidth}
+                          onChange={(e) => setTargetWidth(parseFloat(e.target.value) || 1)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-slate-400 text-[11px]">Target Depth Y (mm)</label>
+                        <input
+                          type="number"
+                          min="0.1"
+                          step="1"
+                          value={targetDepth}
+                          onChange={(e) => setTargetDepth(parseFloat(e.target.value) || 1)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-100 focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
-            {scaleMessage && (
-              <p className="text-[11px] text-cyan-400 bg-cyan-950/30 border border-cyan-500/30 p-2 rounded">
-                {scaleMessage}
+              {scaleMessage && (
+                <p className="text-[11px] text-cyan-400 bg-cyan-950/30 border border-cyan-500/30 p-2 rounded">
+                  {scaleMessage}
+                </p>
+              )}
+
+              <button
+                onClick={handleScale}
+                disabled={!mesh || isScaling}
+                className="w-full py-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-bold rounded transition flex items-center justify-center space-x-2 disabled:opacity-50"
+              >
+                {isScaling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                <span>Apply Scale Transformation</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* TAB: ORCASLICER STUDIO (MOUSE-EARS, ADAPTIVE LAYERS, FILAMENT COST) */}
+        {activeTab === "orca" && (
+          <div className="space-y-4">
+            {/* 1. Mouse-Ear Anti-Warping Brim */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <CircleDot className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Mouse-Ear Anti-Warping</span>
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/60">
+                  Corner Adhesion
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Attaches low-profile circular tabs to acute base footprint corners to prevent bed lift and thermal warping.
               </p>
-            )}
 
-            <button
-              onClick={handleScale}
-              disabled={!mesh || isScaling}
-              className="w-full py-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-bold rounded transition flex items-center justify-center space-x-2 disabled:opacity-50"
-            >
-              {isScaling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Maximize2 className="w-3.5 h-3.5" />}
-              <span>Apply Scale Transformation</span>
-            </button>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1">Disc Radius (mm)</label>
+                  <input
+                    type="number"
+                    min="2"
+                    max="25"
+                    step="1"
+                    value={earRadius}
+                    onChange={(e) => setEarRadius(parseFloat(e.target.value) || 8)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-100 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1">Thickness (mm)</label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="1.0"
+                    step="0.05"
+                    value={earThickness}
+                    onChange={(e) => setEarThickness(parseFloat(e.target.value) || 0.2)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-100 text-xs"
+                  />
+                </div>
+              </div>
+
+              {earMessage && (
+                <p className="text-[10px] text-emerald-300 bg-emerald-950/40 border border-emerald-500/30 p-1.5 rounded text-center">
+                  {earMessage}
+                </p>
+              )}
+
+              <button
+                onClick={handleGenerateMouseEars}
+                disabled={!mesh || isGeneratingEars}
+                className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 border border-cyan-500/40 text-cyan-300 font-bold rounded transition flex items-center justify-center space-x-1.5 text-xs disabled:opacity-50"
+              >
+                {isGeneratingEars ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                <span>Generate Corner Mouse-Ears</span>
+              </button>
+            </div>
+
+            {/* 2. Adaptive Variable Layer Height */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Adaptive Layer Height</span>
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-950 text-blue-400 border border-blue-800/60">
+                  Variable Z
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Optimizes layer thickness based on surface curvature slope: fine layers on curves, thick layers on vertical walls.
+              </p>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                <div>
+                  <label className="text-[9px] text-slate-400 block mb-1">Min (mm)</label>
+                  <input
+                    type="number"
+                    step="0.02"
+                    value={minLayerH}
+                    onChange={(e) => setMinLayerH(parseFloat(e.target.value) || 0.08)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-100 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-400 block mb-1">Max (mm)</label>
+                  <input
+                    type="number"
+                    step="0.02"
+                    value={maxLayerH}
+                    onChange={(e) => setMaxLayerH(parseFloat(e.target.value) || 0.28)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-100 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-400 block mb-1">Nominal (mm)</label>
+                  <input
+                    type="number"
+                    step="0.02"
+                    value={nomLayerH}
+                    onChange={(e) => setNomLayerH(parseFloat(e.target.value) || 0.20)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-100 text-xs"
+                  />
+                </div>
+              </div>
+
+              {adaptiveResult && (
+                <div className="p-2.5 rounded bg-slate-950 border border-slate-800 text-[10px] space-y-1">
+                  <div className="flex items-center justify-between text-slate-300">
+                    <span>Adaptive Layer Count:</span>
+                    <span className="font-bold text-cyan-300">{adaptiveResult.total_layers_adaptive} layers</span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>Nominal (0.20mm):</span>
+                    <span>{adaptiveResult.total_layers_nominal} layers</span>
+                  </div>
+                  <div className="flex items-center justify-between text-emerald-400 font-bold pt-1 border-t border-slate-800">
+                    <span>Print Time Impact:</span>
+                    <span>{adaptiveResult.time_savings_pct > 0 ? `${adaptiveResult.time_savings_pct}% Faster` : `${Math.abs(adaptiveResult.time_savings_pct)}% Higher Fidelity`}</span>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={handleComputeAdaptiveLayers}
+                disabled={!mesh || isProfilingLayers}
+                className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 border border-blue-500/40 text-blue-300 font-bold rounded transition flex items-center justify-center space-x-1.5 text-xs disabled:opacity-50"
+              >
+                {isProfilingLayers ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
+                <span>Profile Adaptive Layer Heights</span>
+              </button>
+            </div>
+
+            {/* 3. Filament Material & Cost Calculator */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <Coins className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Filament Library & Print Cost</span>
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-800/60">
+                  Engineering Presets
+                </span>
+              </div>
+
+              <div className="space-y-2">
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1">Filament Material Preset</label>
+                  <select
+                    value={selectedFilamentId}
+                    onChange={(e) => setSelectedFilamentId(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-100 text-xs outline-none"
+                  >
+                    {filaments.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name} ({f.material} - ${f.cost_per_kg_usd}/kg)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Infill Density ({infillPct}%)</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={infillPct}
+                      onChange={(e) => setInfillPct(parseInt(e.target.value))}
+                      className="w-full accent-cyan-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1">Perimeter Walls</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="8"
+                      value={wallCount}
+                      onChange={(e) => setWallCount(parseInt(e.target.value) || 3)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-slate-100 text-xs"
+                    />
+                  </div>
+                </div>
+
+                {costResult && (
+                  <div className="p-2.5 rounded bg-slate-950 border border-slate-800 text-[10px] space-y-1.5">
+                    <div className="flex items-center justify-between text-slate-300">
+                      <span>Estimated Mass:</span>
+                      <span className="font-bold text-amber-300">{costResult.estimated_mass_grams} g</span>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-400">
+                      <span>Filament Length:</span>
+                      <span>{costResult.estimated_filament_length_meters} m (1.75mm)</span>
+                    </div>
+                    <div className="flex items-center justify-between text-emerald-400 font-bold pt-1 border-t border-slate-800">
+                      <span>Material Cost:</span>
+                      <span className="text-sm">${costResult.estimated_material_cost_usd.toFixed(2)} USD</span>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleEstimateCost}
+                  disabled={!mesh || isEstimatingCost}
+                  className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-amber-300 font-bold rounded transition flex items-center justify-center space-x-1.5 text-xs disabled:opacity-50"
+                >
+                  {isEstimatingCost ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Coins className="w-3.5 h-3.5" />}
+                  <span>Calculate Mass & Cost Estimate</span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
