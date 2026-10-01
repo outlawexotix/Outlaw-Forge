@@ -14,7 +14,13 @@ import {
   SliceModelPayload,
   SliceModelResult,
   RepairModelPayload,
-  RepairModelResult
+  RepairModelResult,
+  HollowModelPayload,
+  HollowModelResult,
+  ArrangeProjectPayload,
+  ArrangeProjectResult,
+  ExportProject3MFPayload,
+  ExportProject3MFResponse
 } from "@shared/types/api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -254,6 +260,68 @@ export class ApiClient {
   }
 
   /**
+   * Hollow out a solid 3D model with wall thickness and bottom drain holes
+   */
+  async hollowModel(projectId: string, modelId: string, payload?: HollowModelPayload): Promise<HollowModelResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/hollow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to hollow model");
+    }
+    return res.json();
+  }
+
+  /**
+   * Duplicate a working model in the project
+   */
+  async duplicateModel(projectId: string, modelId: string): Promise<WorkingModel> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/duplicate`, {
+      method: "POST",
+      headers: { "Accept": "application/json" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to duplicate model");
+    }
+    return res.json();
+  }
+
+  /**
+   * Delete a working model from the project
+   */
+  async deleteModel(projectId: string, modelId: string): Promise<{ message: string; model_id: string }> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}`, {
+      method: "DELETE",
+      headers: { "Accept": "application/json" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to delete model");
+    }
+    return res.json();
+  }
+
+  /**
+   * Auto-arrange all models collision-free on the build plate
+   */
+  async arrangeProject(projectId: string, payload?: ArrangeProjectPayload): Promise<ArrangeProjectResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/arrange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to arrange project models");
+    }
+    return res.json();
+  }
+
+  /**
    * Export transformed model
    */
   async exportModel(projectId: string, modelId: string, payload: ExportModelPayload): Promise<{ download_url: string; filename: string }> {
@@ -265,6 +333,155 @@ export class ApiClient {
     if (!res.ok) throw new Error(`Failed to export model: ${res.statusText}`);
     return res.json();
   }
+
+  /**
+   * Export all project models into a 3MF archive for OrcaSlicer/Bambu Studio
+   */
+  async exportProject3MF(projectId: string, payload?: ExportProject3MFPayload): Promise<ExportProject3MFResponse> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/export_3mf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to export 3MF package");
+    }
+    return res.json();
+  }
+
+  /**
+   * Generate procedural 3D calibration artifact
+   */
+  async generateCalibrationArtifact(
+    projectId: string,
+    payload: import("@shared/types/api").CalibrationGeneratePayload
+  ): Promise<import("@shared/types/api").CalibrationGenerateResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/calibration/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to generate calibration artifact");
+    }
+    return res.json();
+  }
+
+  /**
+   * Auto-orient model for FDM support & height minimization
+   */
+  async autoOrient(
+    projectId: string,
+    modelId: string,
+    payload?: import("@shared/types/api").AutoOrientPayload
+  ): Promise<import("@shared/types/api").AutoOrientResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/auto_orient`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to auto-orient model");
+    }
+    return res.json();
+  }
+
+  /**
+   * Auto-arrange multi-model build plate nesting
+   */
+  async autoArrange(
+    projectId: string,
+    payload?: import("@shared/types/api").AutoArrangePayload
+  ): Promise<import("@shared/types/api").AutoArrangeResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/auto_arrange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to auto-arrange models");
+    }
+    return res.json();
+  }
+
+  /**
+   * Generate mouse-ear anti-warping corner discs
+   */
+  async generateMouseEars(
+    projectId: string,
+    modelId: string,
+    payload?: import("@shared/types/api").MouseEarPayload
+  ): Promise<import("@shared/types/api").MouseEarResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/mouse_ears`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to generate mouse-ears");
+    }
+    return res.json();
+  }
+
+  /**
+   * Compute adaptive variable layer height profile
+   */
+  async computeAdaptiveLayers(
+    projectId: string,
+    modelId: string,
+    payload?: import("@shared/types/api").AdaptiveLayerPayload
+  ): Promise<import("@shared/types/api").AdaptiveLayerResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/adaptive_layers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to compute adaptive layers");
+    }
+    return res.json();
+  }
+
+  /**
+   * List filament material profiles
+   */
+  async listFilaments(projectId?: string): Promise<import("@shared/types/api").FilamentProfile[]> {
+    const url = projectId ? `${this.baseUrl}/projects/${projectId}/filaments` : `${this.baseUrl}/filaments`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Failed to list filaments: ${res.statusText}`);
+    return res.json();
+  }
+
+  /**
+   * Calculate filament mass and print cost estimation
+   */
+  async estimateCost(
+    projectId: string,
+    modelId: string,
+    payload?: import("@shared/types/api").CostEstimationPayload
+  ): Promise<import("@shared/types/api").CostEstimationResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/estimate_cost`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to estimate cost");
+    }
+    return res.json();
+  }
 }
 
 export const apiClient = new ApiClient();
+

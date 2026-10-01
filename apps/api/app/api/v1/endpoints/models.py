@@ -8,8 +8,15 @@ import aiosqlite
 
 from app.db.database import get_db
 from app.models.mesh import (
+    ArrangeItemPlacement,
+    ArrangeProjectPayload,
+    ArrangeProjectResult,
     ExportModelPayload,
     ExportModelResponse,
+    ExportProject3MFPayload,
+    ExportProject3MFResponse,
+    HollowModelPayload,
+    HollowModelResult,
     OverhangAnalysisResult,
     RepairModelPayload,
     RepairModelResult,
@@ -1020,3 +1027,432 @@ async def download_exported_file(filename: str):
         media_type=media_type,
         filename=clean_name,
     )
+
+
+# --- Hollow, Duplicate, Delete, and Arrange Endpoints ---
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/hollow",
+    response_model=HollowModelResult,
+    summary="Hollow 3D model shell with drain holes",
+)
+@router.post(
+    "/models/{model_id}/hollow",
+    response_model=HollowModelResult,
+    summary="Hollow 3D model shell direct",
+)
+async def hollow_model(
+    model_id: str,
+    payload: Optional[HollowModelPayload] = None,
+    project_id: Optional[str] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+) -> HollowModelResult:
+    """
+    Hollow out a solid 3D model to reduce weight and save resin/filament.
+    Creates an inward-offset inner shell with configurable wall thickness and punches bottom drain holes.
+    """
+    if project_id:
+        model = await project_repo.get_working_model_for_project(project_id, model_id)
+    else:
+        model = await project_repo.get_working_model(model_id)
+
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found",
+        )
+
+    resolved_path = storage_service.resolve_path(model.storage_path)
+    mesh = mesh_service.load_mesh(resolved_path)
+
+    opts = payload or HollowModelPayload()
+    hollowed_mesh, volume_saved, drain_holes_count = mesh_service.hollow_mesh(
+        mesh=mesh,
+        wall_thickness_mm=opts.wall_thickness_mm,
+        add_drain_holes=opts.add_drain_holes,
+        drain_hole_radius_mm=opts.drain_hole_radius_mm,
+        drain_hole_count=opts.drain_hole_count,
+    )
+
+    analysis = mesh_service.analyze_mesh(hollowed_mesh)
+
+    hollow_filename = f"hollow_{model.filename}"
+    file_uuid = uuid.uuid4().hex[:12]
+    new_working_filename = f"{file_uuid}_{storage_service.sanitize_filename(hollow_filename)}"
+    new_working_path = (storage_service.working_dir / new_working_filename).resolve()
+    storage_service.validate_safe_path(new_working_path)
+
+    mesh_service.export_mesh(hollowed_mesh, new_working_path, format=model.file_format)
+    relative_storage_path = f"working/{new_working_filename}"
+
+    updated_model = await project_repo.update_working_model(
+        model_id=model_id,
+        storage_path=relative_storage_path,
+        bounds=analysis.bounds,
+        triangle_count=analysis.triangle_count,
+        vertex_count=analysis.vertex_count,
+        surface_area_cm2=analysis.surface_area_cm2,
+        volume_cm3=analysis.volume_cm3,
+        is_watertight=analysis.is_watertight,
+        transform=model.transform,
+    )
+
+    if not updated_model:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update hollowed model in database.",
+        )
+
+    await project_repo.record_operation(
+        project_id=model.project_id,
+        model_id=model_id,
+        operation_type="HOLLOW",
+        parameters=opts.model_dump(),
+        user_summary=f"Hollowed model with {opts.wall_thickness_mm}mm wall thickness and {drain_holes_count} drain holes",
+        resulting_state_ref=model_id,
+        success=True,
+    )
+
+    return HollowModelResult(
+        hollowed_model=updated_model,
+        wall_thickness_mm=opts.wall_thickness_mm,
+        drain_holes_added=drain_holes_count,
+        volume_saved_cm3=volume_saved,
+        message=f"Model successfully hollowed with {opts.wall_thickness_mm}mm wall thickness",
+    )
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/duplicate",
+    response_model=WorkingModel,
+    status_code=status.HTTP_201_CREATED,
+    summary="Duplicate working model in project",
+)
+@router.post(
+    "/models/{model_id}/duplicate",
+    response_model=WorkingModel,
+    status_code=status.HTTP_201_CREATED,
+    summary="Duplicate working model direct",
+)
+async def duplicate_model(
+    model_id: str,
+    project_id: Optional[str] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+) -> WorkingModel:
+    """
+    Duplicate an existing working model in the project with an offset transform position.
+    """
+    if project_id:
+        model = await project_repo.get_working_model_for_project(project_id, model_id)
+    else:
+        model = await project_repo.get_working_model(model_id)
+
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found",
+        )
+
+    resolved_path = storage_service.resolve_path(model.storage_path)
+    file_bytes = resolved_path.read_bytes()
+
+    stem = Path(model.filename).stem
+    ext = model.file_format.lower().lstrip(".")
+    dup_filename = f"{stem}_copy.{ext}"
+
+    dup_working_path, dup_rel_path = storage_service.save_working(
+        file_bytes=file_bytes,
+        filename=dup_filename,
+    )
+
+    from app.models.project import MeshTransform
+    orig_pos = model.transform.position_mm
+    new_transform = MeshTransform(
+        position_mm=[orig_pos[0] + 20.0, orig_pos[1] + 20.0, orig_pos[2]],
+        rotation_deg=model.transform.rotation_deg,
+        scale_factors=model.transform.scale_factors,
+        uniform_scale_percent=model.transform.uniform_scale_percent,
+    )
+
+    new_model = await project_repo.add_working_model(
+        project_id=model.project_id,
+        source_file_id=model.source_file_id,
+        filename=dup_filename,
+        file_format=ext,
+        storage_path=dup_rel_path,
+        bounds=model.bounds,
+        triangle_count=model.triangle_count,
+        vertex_count=model.vertex_count,
+        surface_area_cm2=model.surface_area_cm2,
+        volume_cm3=model.volume_cm3,
+        is_watertight=model.is_watertight,
+        transform=new_transform,
+    )
+
+    await project_repo.record_operation(
+        project_id=model.project_id,
+        model_id=new_model.id,
+        operation_type="DUPLICATE",
+        parameters={"source_model_id": model_id},
+        user_summary=f"Duplicated model '{model.filename}' as '{dup_filename}'",
+        resulting_state_ref=new_model.id,
+        success=True,
+    )
+
+    return new_model
+
+
+@router.delete(
+    "/projects/{project_id}/models/{model_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete working model from project",
+)
+@router.delete(
+    "/models/{model_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete working model direct",
+)
+async def delete_model(
+    model_id: str,
+    project_id: Optional[str] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """
+    Remove a working model from the project.
+    """
+    if project_id:
+        model = await project_repo.get_working_model_for_project(project_id, model_id)
+    else:
+        model = await project_repo.get_working_model(model_id)
+
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found",
+        )
+
+    deleted = await project_repo.delete_working_model(model_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete working model from database.",
+        )
+
+    await project_repo.record_operation(
+        project_id=model.project_id,
+        model_id=model_id,
+        operation_type="DELETE",
+        parameters={"deleted_model_id": model_id, "filename": model.filename},
+        user_summary=f"Deleted working model '{model.filename}' from project",
+        resulting_state_ref=None,
+        success=True,
+    )
+
+    return {"message": f"Model '{model.filename}' successfully deleted", "model_id": model_id}
+
+
+@router.post(
+    "/projects/{project_id}/arrange",
+    response_model=ArrangeProjectResult,
+    summary="Auto-arrange all working models collision-free on the build plate",
+)
+async def arrange_project_models(
+    project_id: str,
+    payload: Optional[ArrangeProjectPayload] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    printer_repo: PrinterRepository = Depends(get_printer_repo),
+) -> ArrangeProjectResult:
+    """
+    Auto-arrange all 3D models in a project across the print bed with collision prevention.
+    Updates each model's position in SQLite and records an ARRANGE operation.
+    """
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project with ID '{project_id}' not found",
+        )
+
+    if not project.working_models:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project has no 3D models to arrange.",
+        )
+
+    opts = payload or ArrangeProjectPayload()
+    target_printer_id = opts.printer_id or project.selected_printer_id
+    bed_w = 220.0
+    bed_d = 220.0
+    if target_printer_id:
+        printer = await printer_repo.get_by_id(target_printer_id)
+        if printer:
+            bed_w = float(printer.build_width_mm)
+            bed_d = float(printer.build_depth_mm)
+
+    models_data = []
+    for wm in project.working_models:
+        models_data.append({
+            "model_id": wm.id,
+            "filename": wm.filename,
+            "bounds_dimensions": wm.bounds.dimensions_mm,
+        })
+
+    placements_raw, all_fit = mesh_service.arrange_models_on_bed(
+        models_data=models_data,
+        bed_width_mm=bed_w,
+        bed_depth_mm=bed_d,
+        spacing_mm=opts.spacing_mm,
+        bed_margin_mm=opts.bed_margin_mm,
+    )
+
+    placements = []
+    for p in placements_raw:
+        mid = p["model_id"]
+        pos = p["position_mm"]
+        rot = p.get("rotation_deg", [0.0, 0.0, 0.0])
+
+        wm = next((m for m in project.working_models if m.id == mid), None)
+        if wm:
+            from app.models.project import MeshTransform
+            updated_transform = MeshTransform(
+                position_mm=pos,
+                rotation_deg=wm.transform.rotation_deg,
+                scale_factors=wm.transform.scale_factors,
+                uniform_scale_percent=wm.transform.uniform_scale_percent,
+            )
+            await project_repo.update_working_model(
+                model_id=mid,
+                transform=updated_transform,
+            )
+
+        placements.append(ArrangeItemPlacement(
+            model_id=mid,
+            filename=p["filename"],
+            position_mm=pos,
+            rotation_deg=rot,
+        ))
+
+    await project_repo.record_operation(
+        project_id=project_id,
+        operation_type="ARRANGE",
+        parameters={"spacing_mm": opts.spacing_mm, "bed_margin_mm": opts.bed_margin_mm, "printer_id": target_printer_id},
+        user_summary=f"Auto-arranged {len(placements)} models on {bed_w}x{bed_d}mm build plate (All fit: {all_fit})",
+        resulting_state_ref=project_id,
+        success=True,
+    )
+
+    return ArrangeProjectResult(
+        project_id=project_id,
+        models_arranged=len(placements),
+        placements=placements,
+        all_fit=all_fit,
+        message=f"Successfully arranged {len(placements)} models on build bed" if all_fit else "Arranged models on bed with overflow warning",
+    )
+
+
+@router.post(
+    "/projects/{project_id}/export_3mf",
+    response_model=ExportProject3MFResponse,
+    summary="Export all project models into a production-ready 3MF package for OrcaSlicer/Bambu Studio",
+)
+async def export_project_3mf(
+    project_id: str,
+    payload: Optional[ExportProject3MFPayload] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    printer_repo: PrinterRepository = Depends(get_printer_repo),
+) -> ExportProject3MFResponse:
+    """
+    Exports all active models in the project with their transformations (positions, rotations, scales)
+    into a standardized 3MF archive containing 3D/3dmodel.model XML and OrcaSlicer Metadata.
+    """
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project with ID '{project_id}' not found",
+        )
+
+    if not project.working_models:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project has no 3D models to export.",
+        )
+
+    opts = payload or ExportProject3MFPayload()
+
+    printer_name = "Generic 3D Printer"
+    if project.selected_printer_id:
+        printer = await printer_repo.get_by_id(project.selected_printer_id)
+        if printer:
+            printer_name = f"{printer.manufacturer} {printer.model}"
+
+    models_data = []
+    for wm in project.working_models:
+        resolved_path = storage_service.resolve_path(wm.storage_path)
+        try:
+            m = mesh_service.load_mesh(resolved_path)
+            models_data.append({
+                "model_id": wm.id,
+                "filename": wm.filename,
+                "mesh": m,
+                "position_mm": wm.transform.position_mm,
+                "rotation_deg": wm.transform.rotation_deg,
+                "scale_factors": wm.transform.scale_factors,
+            })
+        except Exception as e:
+            continue
+
+    if not models_data:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load project meshes for 3MF export.",
+        )
+
+    clean_proj_name = storage_service.sanitize_filename(project.name or "project")
+    filename = opts.filename or f"{clean_proj_name}.3mf"
+    if not filename.lower().endswith(".3mf"):
+        filename += ".3mf"
+
+    file_uuid = uuid.uuid4().hex[:12]
+    export_filename = f"{file_uuid}_{storage_service.sanitize_filename(filename)}"
+    export_path = (storage_service.exports_dir / export_filename).resolve()
+    storage_service.validate_safe_path(export_path)
+
+    mesh_service.export_project_3mf(
+        models_data=models_data,
+        destination=export_path,
+        project_name=project.name,
+        printer_model=printer_name,
+        filament_name=opts.filament_preset or "Generic PLA",
+    )
+
+    file_size_bytes = export_path.stat().st_size
+    relative_path = f"exports/{export_filename}"
+    download_url = f"/api/v1/models/export/download/{export_filename}"
+
+    await project_repo.record_operation(
+        project_id=project_id,
+        operation_type="EXPORT_3MF",
+        parameters={
+            "filename": filename,
+            "models_count": len(models_data),
+            "printer_model": printer_name,
+            "filament_preset": opts.filament_preset,
+        },
+        user_summary=f"Exported project with {len(models_data)} models to 3MF ({filename}, {file_size_bytes / 1024:.1f} KB)",
+        resulting_state_ref=export_filename,
+        success=True,
+    )
+
+    return ExportProject3MFResponse(
+        project_id=project_id,
+        filename=filename,
+        storage_path=relative_path,
+        download_url=download_url,
+        file_size_bytes=file_size_bytes,
+        models_exported=len(models_data),
+        message="Successfully generated 3MF production archive for OrcaSlicer & Bambu Studio",
+    )
+
+

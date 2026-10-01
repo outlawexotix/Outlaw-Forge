@@ -34,6 +34,7 @@ import {
   ShieldAlert,
   Paintbrush,
   Sliders,
+  Upload,
 } from 'lucide-react';
 
 const DEFAULT_PRINTER: PrinterProfile = {
@@ -61,6 +62,8 @@ const DEFAULT_SETTINGS: ViewportSettings = {
 export interface ViewportContainerProps {
   printer?: PrinterProfile;
   model?: WorkingModel | null;
+  models?: WorkingModel[];
+  activeModelId?: string | null;
   modelBuffer?: ArrayBuffer | null;
   modelUrl?: string | null;
   activeTool?: 'select' | 'move' | 'rotate' | 'scale' | 'slice' | 'inspect' | 'lay_flat';
@@ -70,6 +73,8 @@ export interface ViewportContainerProps {
   onModelMetrics?: (metrics: MeshMetrics) => void;
   onCursorCoordinates?: (coords: { x: number; y: number; z: number }) => void;
   onTransformChange?: (transform: { position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] }) => void;
+  onDropFile?: (file: File) => void;
+  onSelectModel?: (modelId: string) => void;
 }
 
 /**
@@ -104,6 +109,8 @@ const BedRaycaster: React.FC<{
 export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   printer = DEFAULT_PRINTER,
   model = null,
+  models = [],
+  activeModelId = null,
   modelBuffer = null,
   modelUrl = null,
   activeTool = 'select',
@@ -113,6 +120,8 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   onModelMetrics,
   onCursorCoordinates,
   onTransformChange,
+  onDropFile,
+  onSelectModel,
 }) => {
   const [settings, setSettings] = useState<ViewportSettings>(DEFAULT_SETTINGS);
   const [activeView, setActiveView] = useState<PresetView>('isometric');
@@ -124,6 +133,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isGizmoDragging, setIsGizmoDragging] = useState<boolean>(false);
+  const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
 
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -141,6 +151,35 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
     }),
     [bedWidth, bedDepth, bedHeight]
   );
+
+  // Drag and drop 3D file handler
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const droppedFile = e.dataTransfer.files[0];
+      const ext = droppedFile.name.split('.').pop()?.toLowerCase();
+      if (['stl', 'obj', 'glb', 'gltf', '3mf'].includes(ext || '')) {
+        onDropFile?.(droppedFile);
+      } else {
+        setErrorMessage(`Unsupported file format '.${ext}'. Drop STL, OBJ, or GLB files.`);
+      }
+    }
+  };
 
   // Transition to standard CAD Preset View
   const handlePresetView = useCallback(
@@ -234,6 +273,9 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   return (
     <div
       ref={canvasContainerRef}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
       className={`relative w-full h-full min-h-[500px] overflow-hidden bg-[#090d16] select-none ${className}`}
     >
       {/* 3D Canvas Scene */}
@@ -293,24 +335,51 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
             minorStep={settings.gridMinorStepMm}
           />
 
-          {/* Model Mesh Loader & Renderer */}
-          <ModelRenderer
-            model={model}
-            modelBuffer={modelBuffer}
-            modelUrl={modelUrl}
-            printer={printer}
-            activeTool={activeTool}
-            renderMode={renderMode}
-            layerHeightMm={layerHeightMm}
-            slicePlaneOrigin={slicePlaneOrigin}
-            slicePlaneNormal={slicePlaneNormal}
-            showBoundingBox={settings.showBoundingBoxes}
-            showWireframe={settings.showWireframe}
-            onModelLoaded={handleModelLoaded}
-            onTransformChange={onTransformChange}
-            onGizmoDragging={(dragging) => setIsGizmoDragging(dragging)}
-            onError={handleModelError}
-          />
+          {/* Multi-Model / Single-Model Renderer */}
+          {models && models.length > 1 ? (
+            models.map((m) => {
+              const isSelected = m.id === (activeModelId || model?.id);
+              return (
+                <ModelRenderer
+                  key={m.id}
+                  model={m}
+                  printer={printer}
+                  activeTool={isSelected ? activeTool : 'select'}
+                  renderMode={isSelected ? renderMode : 'solid'}
+                  layerHeightMm={layerHeightMm}
+                  slicePlaneOrigin={slicePlaneOrigin}
+                  slicePlaneNormal={slicePlaneNormal}
+                  showBoundingBox={isSelected ? settings.showBoundingBoxes : false}
+                  showWireframe={isSelected ? settings.showWireframe : false}
+                  isSelected={isSelected}
+                  color={isSelected ? '#38bdf8' : '#64748b'}
+                  onModelLoaded={isSelected ? handleModelLoaded : undefined}
+                  onTransformChange={isSelected ? onTransformChange : undefined}
+                  onGizmoDragging={(dragging) => isSelected && setIsGizmoDragging(dragging)}
+                  onError={handleModelError}
+                />
+              );
+            })
+          ) : (
+            <ModelRenderer
+              model={model}
+              modelBuffer={modelBuffer}
+              modelUrl={modelUrl}
+              printer={printer}
+              activeTool={activeTool}
+              renderMode={renderMode}
+              layerHeightMm={layerHeightMm}
+              slicePlaneOrigin={slicePlaneOrigin}
+              slicePlaneNormal={slicePlaneNormal}
+              showBoundingBox={settings.showBoundingBoxes}
+              showWireframe={settings.showWireframe}
+              isSelected={true}
+              onModelLoaded={handleModelLoaded}
+              onTransformChange={onTransformChange}
+              onGizmoDragging={(dragging) => setIsGizmoDragging(dragging)}
+              onError={handleModelError}
+            />
+          )}
 
           {/* Planar Slicing Cutting Plane */}
           {activeTool === 'slice' && (
@@ -336,6 +405,19 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
         {/* OrcaSlicer Orientation Gizmo / View Cube */}
         <OrientationGizmo alignment="top-right" margin={[70, 70]} />
       </Canvas>
+
+      {/* Direct Drag-and-Drop Active Overlay */}
+      {isDraggingFile && (
+        <div className="absolute inset-0 bg-cyan-950/70 border-4 border-dashed border-cyan-400 backdrop-blur-sm flex flex-col items-center justify-center z-40 pointer-events-none animate-in fade-in duration-150">
+          <Upload className="w-16 h-16 text-cyan-300 animate-bounce mb-3" />
+          <div className="text-base font-mono font-bold text-white uppercase tracking-wider">
+            Drop 3D CAD Mesh onto Build Plate
+          </div>
+          <div className="text-xs font-mono text-cyan-200 mt-1">
+            Supports STL, OBJ, GLB, GLTF (Deterministic mm normalization)
+          </div>
+        </div>
+      )}
 
       {/* Floating HUD: Preset View Controls & OrcaSlicer Toolbar (Top-Left) */}
       <div className="absolute top-3 left-4 flex flex-col gap-2 pointer-events-auto z-20">

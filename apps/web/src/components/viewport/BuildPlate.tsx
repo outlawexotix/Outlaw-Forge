@@ -1,90 +1,91 @@
 import React, { useMemo } from 'react';
 import * as THREE from 'three';
-import { Grid, Text } from '@react-three/drei';
+import { Text } from '@react-three/drei';
 import { PrinterProfile } from '@shared/types/api';
+import { createOrcaBedMaterial, PlateTextureType } from '@three-tools';
 
 interface BuildPlateProps {
   printer: PrinterProfile;
+  plateType?: PlateTextureType;
   showEnvelope?: boolean;
   showOrigin?: boolean;
+  showExclusionZone?: boolean;
   majorStep?: number; // mm, default 10
   minorStep?: number; // mm, default 1
 }
 
 export const BuildPlate: React.FC<BuildPlateProps> = ({
   printer,
+  plateType = 'textured_pei',
   showEnvelope = true,
   showOrigin = true,
+  showExclusionZone = true,
   majorStep = 10,
   minorStep = 1,
 }) => {
   const bedWidth = printer.build_width_mm || 256;
   const bedDepth = printer.build_depth_mm || 256;
   const bedHeight = printer.build_height_mm || 256;
-  const isCenterOrigin = true;
 
-  // Build plate offset if origin is front-left vs center
-  const bedCenterOffset = useMemo<[number, number, number]>(() => {
-    if (isCenterOrigin) {
-      return [0, 0, 0];
+  // OrcaSlicer Shader Bed Material
+  const bedMaterial = useMemo(() => {
+    return createOrcaBedMaterial({
+      plateType,
+      bedWidth,
+      bedDepth,
+      majorGridMm: majorStep,
+      minorGridMm: minorStep,
+      showExclusionZone,
+    });
+  }, [plateType, bedWidth, bedDepth, majorStep, minorStep, showExclusionZone]);
+
+  // Height ruler ticks on the build volume envelope corners (every 50mm)
+  const heightTicks = useMemo(() => {
+    const ticks: { z: number; label: string }[] = [];
+    for (let z = 50; z <= bedHeight; z += 50) {
+      ticks.push({ z, label: `${z}mm` });
     }
-    return [bedWidth / 2, bedDepth / 2, 0];
-  }, [isCenterOrigin, bedWidth, bedDepth]);
-
-  // Origin indicator position in slicer coordinates
-  const originPos = useMemo<[number, number, number]>(() => {
-    return [0, 0, 0];
-  }, []);
+    return ticks;
+  }, [bedHeight]);
 
   return (
     <group name="BuildPlateRoot">
-      {/* Bed Base Surface & Dual Frequency Grid */}
-      <group position={[bedCenterOffset[0], bedCenterOffset[1], -0.1]}>
-        {/* Physical Build Sheet Surface */}
-        <mesh receiveShadow position={[0, 0, -0.5]}>
-          <boxGeometry args={[bedWidth, bedDepth, 1]} />
-          <meshStandardMaterial
-            color="#1e293b"
-            roughness={0.8}
-            metalness={0.2}
-          />
+      {/* 1. Physical Build Sheet Surface with Procedural OrcaSlicer PEI Shader */}
+      <group position={[0, 0, 0]}>
+        {/* Top Surface Quad for Shader */}
+        <mesh receiveShadow position={[0, 0, 0]}>
+          <planeGeometry args={[bedWidth, bedDepth]} />
+          <primitive object={bedMaterial} attach="material" />
         </mesh>
 
-        {/* High precision Drei Grid overlay aligned with millimeter grid */}
-        {/* Note: In SlicerSpace (Z-up), ground is XY plane (rotation [Math.PI / 2, 0, 0]) */}
-        <group position={[0, 0, 0.1]} rotation={[Math.PI / 2, 0, 0]}>
-          <Grid
-            args={[bedWidth, bedDepth]}
-            cellSize={minorStep}
-            cellThickness={0.4}
-            cellColor="#334155"
-            sectionSize={majorStep}
-            sectionThickness={1.0}
-            sectionColor="#64748b"
-            fadeDistance={Math.max(bedWidth, bedDepth) * 2.5}
-            fadeStrength={1.2}
-            infiniteGrid={false}
+        {/* Physical Plate Base & Edge Chamfer */}
+        <mesh receiveShadow position={[0, 0, -1.0]}>
+          <boxGeometry args={[bedWidth + 2, bedDepth + 2, 2.0]} />
+          <meshStandardMaterial
+            color="#0b0f17"
+            roughness={0.9}
+            metalness={0.3}
           />
-        </group>
+        </mesh>
       </group>
 
-      {/* Origin Triad Marker (0,0,0) */}
+      {/* 2. Origin Triad Marker (0,0,0) */}
       {showOrigin && (
-        <group position={originPos} name="OriginIndicator">
+        <group position={[0, 0, 0.2]} name="OriginIndicator">
           {/* X Axis - Red */}
           <arrowHelper
             args={[
               new THREE.Vector3(1, 0, 0),
               new THREE.Vector3(0, 0, 0),
-              22,
+              24,
               0xef4444,
               5,
               2.5,
             ]}
           />
           <Text
-            position={[28, 0, 0]}
-            fontSize={7}
+            position={[30, 0, 0]}
+            fontSize={6}
             color="#ef4444"
             anchorX="center"
             anchorY="middle"
@@ -97,15 +98,15 @@ export const BuildPlate: React.FC<BuildPlateProps> = ({
             args={[
               new THREE.Vector3(0, 1, 0),
               new THREE.Vector3(0, 0, 0),
-              22,
+              24,
               0x22c55e,
               5,
               2.5,
             ]}
           />
           <Text
-            position={[0, 28, 0]}
-            fontSize={7}
+            position={[0, 30, 0]}
+            fontSize={6}
             color="#22c55e"
             anchorX="center"
             anchorY="middle"
@@ -113,20 +114,20 @@ export const BuildPlate: React.FC<BuildPlateProps> = ({
             Y
           </Text>
 
-          {/* Z Axis - Blue */}
+          {/* Z Axis - Cyan */}
           <arrowHelper
             args={[
               new THREE.Vector3(0, 0, 1),
               new THREE.Vector3(0, 0, 0),
-              22,
+              24,
               0x38bdf8,
               5,
               2.5,
             ]}
           />
           <Text
-            position={[0, 0, 28]}
-            fontSize={7}
+            position={[0, 0, 30]}
+            fontSize={6}
             color="#38bdf8"
             anchorX="center"
             anchorY="middle"
@@ -134,7 +135,7 @@ export const BuildPlate: React.FC<BuildPlateProps> = ({
             Z
           </Text>
 
-          {/* Origin Origin Sphere Marker */}
+          {/* Center Origin Dot */}
           <mesh position={[0, 0, 0]}>
             <sphereGeometry args={[1.5, 16, 16]} />
             <meshBasicMaterial color="#f8fafc" />
@@ -142,18 +143,41 @@ export const BuildPlate: React.FC<BuildPlateProps> = ({
         </group>
       )}
 
-      {/* Printable Volume Bounding Envelope (Wireframe Box) */}
+      {/* 3. Printable Volume Bounding Envelope (Wireframe Box + Height Rulers) */}
       {showEnvelope && (
-        <group position={[bedCenterOffset[0], bedCenterOffset[1], bedHeight / 2]} name="PrintVolumeEnvelope">
+        <group position={[0, 0, bedHeight / 2]} name="PrintVolumeEnvelope">
           <mesh>
             <boxGeometry args={[bedWidth, bedDepth, bedHeight]} />
             <meshBasicMaterial
               color="#0ea5e9"
               wireframe
               transparent
-              opacity={0.25}
+              opacity={0.2}
             />
           </mesh>
+
+          {/* Height Ruler Ticks along rear-left vertical pillar */}
+          {heightTicks.map((tick) => (
+            <group
+              key={tick.z}
+              position={[-bedWidth / 2, -bedDepth / 2, tick.z - bedHeight / 2]}
+            >
+              {/* Tick line */}
+              <mesh position={[2.5, 0, 0]}>
+                <boxGeometry args={[5, 0.6, 0.6]} />
+                <meshBasicMaterial color="#38bdf8" opacity={0.7} transparent />
+              </mesh>
+              <Text
+                position={[10, 0, 0]}
+                fontSize={5}
+                color="#7dd3fc"
+                anchorX="left"
+                anchorY="middle"
+              >
+                {tick.label}
+              </Text>
+            </group>
+          ))}
         </group>
       )}
     </group>

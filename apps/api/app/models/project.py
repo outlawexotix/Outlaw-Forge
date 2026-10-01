@@ -14,7 +14,26 @@ ProjectType = Literal[
     "Other",
 ]
 
-OperationType = Literal["IMPORT", "SCALE", "ROTATE", "CENTER", "LAY_FLAT", "SLICE", "REPAIR", "EXPORT"]
+OperationType = Literal[
+    "IMPORT",
+    "SCALE",
+    "ROTATE",
+    "CENTER",
+    "LAY_FLAT",
+    "SLICE",
+    "REPAIR",
+    "EXPORT",
+    "CALIBRATION_GENERATE",
+    "AUTO_ORIENT",
+    "AUTO_ARRANGE",
+    "MOUSE_EAR_BRIM",
+    "ADAPTIVE_LAYERS",
+    "HOLLOW",
+    "DUPLICATE",
+    "DELETE",
+    "ARRANGE",
+    "EXPORT_3MF",
+]
 
 
 class SourceFile(BaseModel):

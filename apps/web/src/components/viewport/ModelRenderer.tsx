@@ -8,14 +8,18 @@ import {
   parseMeshBuffer,
   loadMeshFromUrl,
   centerGeometryOnBed,
-  computeExactAABB,
   computeMeshMetrics,
   createOverhangInspectionMaterial,
+  createOrcaLayerLinesMaterial,
+  createOrcaCrossSectionMaterial,
   BoundingBox3D,
   MeshMetrics,
 } from '@three-tools';
+import { LayOnFaceTool } from './LayOnFaceTool';
+import { ModelDimensionTags } from './ModelDimensionTags';
 
-export type CADTool = 'select' | 'move' | 'rotate' | 'scale' | 'slice' | 'inspect';
+export type CADTool = 'select' | 'move' | 'rotate' | 'scale' | 'slice' | 'inspect' | 'lay_flat';
+export type RenderMode = 'solid' | 'overhangs' | 'layer_lines' | 'cross_section' | 'wireframe';
 
 export interface ModelTransformEvent {
   position: [number, number, number];
@@ -45,9 +49,29 @@ export interface ModelRendererProps {
   printer: PrinterProfile;
 
   /**
-   * Active CAD Tool mode (move, rotate, scale, inspect, select, etc.)
+   * Active CAD Tool mode (move, rotate, scale, inspect, select, slice, lay_flat)
    */
   activeTool?: CADTool;
+
+  /**
+   * Active Render Mode (Solid CAD, Overhangs, Layer Lines, Cross Section, Wireframe)
+   */
+  renderMode?: RenderMode;
+
+  /**
+   * Slicer layer height in mm for Layer Lines preview (e.g. 0.20, 0.12)
+   */
+  layerHeightMm?: number;
+
+  /**
+   * Cross-section cut plane point [x, y, z] in Slicer space
+   */
+  slicePlaneOrigin?: [number, number, number];
+
+  /**
+   * Cross-section cut plane normal [nx, ny, nz]
+   */
+  slicePlaneNormal?: [number, number, number];
 
   /**
    * Toggle bounding box wireframe
@@ -83,6 +107,11 @@ export interface ModelRendererProps {
    * Callback fired when user begins or ends dragging the transform gizmo
    */
   onGizmoDragging?: (isDragging: boolean) => void;
+
+  /**
+   * Callback fired when Lay on Face tool reorients the model
+   */
+  onOrientToFace?: (rotationDeg: [number, number, number]) => void;
 
   /**
    * Callback fired on loading / parsing failure
@@ -144,6 +173,10 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
   modelUrl,
   printer,
   activeTool = 'select',
+  renderMode = 'solid',
+  layerHeightMm = 0.20,
+  slicePlaneOrigin = [0, 0, 20],
+  slicePlaneNormal = [0, 0, 1],
   showBoundingBox = true,
   showWireframe = false,
   color = '#38bdf8',
@@ -151,6 +184,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
   onModelLoaded,
   onTransformChange,
   onGizmoDragging,
+  onOrientToFace,
   onError,
 }) => {
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
@@ -190,7 +224,6 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
           const fullUrl = modelUrl.startsWith('http') ? modelUrl : `${apiBaseUrl.replace(/\/$/, '')}${modelUrl.startsWith('/') ? '' : '/'}${modelUrl}`;
           loadedGeom = await loadMeshFromUrl(fullUrl, filename, controller.signal);
         } else if (model?.id) {
-          // Attempt to load from standard API model endpoint with cache-busting timestamp
           const versionTag = model?.updated_at ? encodeURIComponent(model.updated_at) : Date.now().toString();
           const apiUrl = `${apiBaseUrl.replace(/\/$/, '')}/models/${model.id}/file?v=${versionTag}`;
           const controller = new AbortController();
@@ -198,7 +231,6 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
           try {
             loadedGeom = await loadMeshFromUrl(apiUrl, model.filename, controller.signal);
           } catch {
-            // Fall back to sample procedural model if remote file not on disk yet
             loadedGeom = createDefaultSampleGeometry();
             if (model?.transform?.uniform_scale_percent && model.transform.uniform_scale_percent !== 100) {
               const s = model.transform.uniform_scale_percent / 100;
@@ -206,7 +238,6 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
             }
           }
         } else {
-          // Default procedural CAD block
           loadedGeom = createDefaultSampleGeometry();
           if (model?.transform?.uniform_scale_percent && model.transform.uniform_scale_percent !== 100) {
             const s = model.transform.uniform_scale_percent / 100;
@@ -234,8 +265,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
         if (isCancelled) return;
         const msg = err instanceof Error ? err.message : 'Failed to parse 3D mesh';
         console.warn('Mesh load exception, falling back to default sample model:', msg);
-        
-        // Fallback to sample model on parse error so viewport never goes blank
+
         const sampleGeom = createDefaultSampleGeometry();
         const { bounds } = centerGeometryOnBed(sampleGeom, bedWidth, bedDepth, true);
         const metrics = computeMeshMetrics(sampleGeom);
@@ -254,7 +284,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
     };
   }, [model?.id, model?.updated_at, model?.filename, model?.transform?.uniform_scale_percent, modelBuffer, modelUrl, bedWidth, bedDepth, onModelLoaded, onError]);
 
-  // Overhang Inspection Material (Amber/Red highlight for downward faces > 45 deg)
+  // OrcaSlicer Shaders
   const overhangMaterial = useMemo(() => {
     return createOverhangInspectionMaterial({
       thresholdDeg: 45.0,
@@ -262,7 +292,25 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
     });
   }, [showWireframe]);
 
-  // Model Transform state to prevent snapping back on re-renders
+  const layerLinesMaterial = useMemo(() => {
+    return createOrcaLayerLinesMaterial({
+      layerHeightMm,
+      baseColor: color,
+      wireframe: showWireframe,
+    });
+  }, [layerHeightMm, color, showWireframe]);
+
+  const crossSectionMaterial = useMemo(() => {
+    return createOrcaCrossSectionMaterial({
+      planePoint: slicePlaneOrigin,
+      planeNormal: slicePlaneNormal,
+      baseColor: color,
+      cutColor: '#f43f5e',
+      wireframe: showWireframe,
+    });
+  }, [slicePlaneOrigin, slicePlaneNormal, color, showWireframe]);
+
+  // Model Transform state
   const [modelTransform, setModelTransform] = useState<{
     position: [number, number, number];
     rotation: [number, number, number];
@@ -279,7 +327,6 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
 
   const lastModelIdRef = useRef<string | null>(null);
 
-  // Initialize or re-center only when model ID genuinely changes
   useEffect(() => {
     const currentId = model?.id || 'sample';
     if (lastModelIdRef.current !== currentId) {
@@ -338,7 +385,6 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
     }
   }, [onTransformChange]);
 
-  // When user finishes manipulating the transform gizmo, persist final transform to React state
   const handleGizmoRelease = useCallback(() => {
     onGizmoDragging?.(false);
     if (!modelGroupRef.current) return;
@@ -349,6 +395,33 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
       scale: [group.scale.x, group.scale.y, group.scale.z],
     });
   }, [onGizmoDragging]);
+
+  // Handle Lay on Face facet orientation
+  const handleOrientToFace = useCallback(
+    (rotDeg: [number, number, number]) => {
+      const rotRad: [number, number, number] = [
+        (rotDeg[0] * Math.PI) / 180,
+        (rotDeg[1] * Math.PI) / 180,
+        (rotDeg[2] * Math.PI) / 180,
+      ];
+      setModelTransform((prev) => ({
+        ...prev,
+        rotation: rotRad,
+      }));
+      if (modelGroupRef.current) {
+        modelGroupRef.current.rotation.set(...rotRad);
+      }
+      onOrientToFace?.(rotDeg);
+      if (onTransformChange) {
+        onTransformChange({
+          position: modelTransform.position,
+          rotation: rotDeg,
+          scale: modelTransform.scale,
+        });
+      }
+    },
+    [modelTransform, onOrientToFace, onTransformChange]
+  );
 
   // Determine Drei TransformControls mode
   const transformMode = useMemo(() => {
@@ -402,6 +475,10 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
     return null;
   }
 
+  // Active material selection based on RenderMode and ActiveTool
+  const effectiveRenderMode: RenderMode =
+    activeTool === 'inspect' ? 'overhangs' : activeTool === 'slice' ? 'cross_section' : renderMode;
+
   return (
     <>
       {/* 3D Model Group Container */}
@@ -412,14 +489,30 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
         scale={modelTransform.scale}
         name="ActiveModelNode"
       >
-        {/* 1. Primary Solid Model Mesh */}
-        {activeTool === 'inspect' ? (
+        {/* 1. Model Mesh with Selected Shader */}
+        {effectiveRenderMode === 'overhangs' ? (
           <mesh
             ref={meshRef}
             geometry={geometry}
             castShadow
             receiveShadow
             material={overhangMaterial}
+          />
+        ) : effectiveRenderMode === 'layer_lines' ? (
+          <mesh
+            ref={meshRef}
+            geometry={geometry}
+            castShadow
+            receiveShadow
+            material={layerLinesMaterial}
+          />
+        ) : effectiveRenderMode === 'cross_section' ? (
+          <mesh
+            ref={meshRef}
+            geometry={geometry}
+            castShadow
+            receiveShadow
+            material={crossSectionMaterial}
           />
         ) : (
           <mesh
@@ -432,12 +525,20 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
               color={color}
               roughness={0.25}
               metalness={0.1}
-              wireframe={showWireframe}
+              wireframe={showWireframe || effectiveRenderMode === 'wireframe'}
             />
           </mesh>
         )}
 
-        {/* 2. Bounding Box Wireframe with Millimeter Precision Dimensions */}
+        {/* 2. OrcaSlicer Lay on Face Interactive Tool */}
+        <LayOnFaceTool
+          geometry={geometry}
+          meshRef={meshRef}
+          enabled={activeTool === 'lay_flat'}
+          onOrientToFace={handleOrientToFace}
+        />
+
+        {/* 3. Bounding Box Wireframe with Millimeter Precision Dimensions */}
         {showBoundingBox && boundingBoxLines && (
           <group name="ModelBoundingBox">
             <lineSegments geometry={boundingBoxLines}>
@@ -459,9 +560,16 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
             )}
           </group>
         )}
+
+        {/* 4. 3D Floating Dimension HUD Tags */}
+        <ModelDimensionTags
+          bounds={computedBounds}
+          scale={modelTransform.scale}
+          visible={showBoundingBox || activeTool === 'scale' || activeTool === 'inspect'}
+        />
       </group>
 
-      {/* 3. Drei TransformControls Manipulator */}
+      {/* 5. Drei TransformControls Manipulator */}
       {transformMode && modelGroupRef.current && (
         <TransformControls
           ref={transformControlsRef}

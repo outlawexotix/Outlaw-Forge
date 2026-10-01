@@ -15,7 +15,7 @@ import {
   Sparkles
 } from "lucide-react";
 
-export type CADTool = "select" | "move" | "rotate" | "scale" | "slice" | "inspect";
+export type CADTool = "select" | "move" | "rotate" | "scale" | "slice" | "inspect" | "lay_flat";
 
 interface SidebarProps {
   activeTool: CADTool;
@@ -66,20 +66,28 @@ const TOOLS: ToolItem[] = [
     description: "Uniform or non-uniform axis scaling",
   },
   {
+    id: "lay_flat",
+    label: "Lay Face",
+    icon: Sparkles,
+    hotkey: "L",
+    description: "Click any flat facet to lay model flush on build plate",
+  },
+  {
     id: "slice",
-    label: "Planar Slice",
+    label: "Planar Cut",
     icon: Scissors,
     hotkey: "K",
     description: "Bisect or slice model along planar cut",
   },
   {
     id: "inspect",
-    label: "Mesh Inspect",
+    label: "Inspect",
     icon: ScanSearch,
     hotkey: "I",
-    description: "Analyze non-manifold edges, volume & normals",
+    description: "Analyze overhangs, volume & normals",
   },
 ];
+
 
 export function Sidebar({
   activeTool,

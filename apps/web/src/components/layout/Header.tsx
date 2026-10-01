@@ -32,6 +32,8 @@ interface HeaderProps {
   onOpenProjectList?: () => void;
   onSaveProject?: () => void;
   onImportClick?: () => void;
+  onOpenCalibration?: () => void;
+  onAutoArrange?: () => void;
 }
 
 export function Header({
@@ -44,6 +46,8 @@ export function Header({
   onOpenProjectList,
   onSaveProject,
   onImportClick,
+  onOpenCalibration,
+  onAutoArrange,
 }: HeaderProps) {
   const getHealthDisplay = () => {
     if (isHealthLoading && !health) {
@@ -198,6 +202,22 @@ export function Header({
           >
             <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
             <span>Import</span>
+          </button>
+          <button 
+            onClick={onOpenCalibration}
+            className="px-2.5 py-1 text-xs font-mono text-cyan-300 hover:text-white hover:bg-cyan-950/60 rounded transition-all flex items-center space-x-1.5 border border-cyan-800/40"
+            title="Open OrcaSlicer Calibration Studio (Temp Tower, Flow Rate, Clearance, Benchmarks)"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Calibration</span>
+          </button>
+          <button 
+            onClick={onAutoArrange}
+            className="px-2.5 py-1 text-xs font-mono text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-all flex items-center space-x-1.5"
+            title="Auto-Arrange & Pack Models on Build Plate"
+          >
+            <Layers className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Auto-Arrange</span>
           </button>
           <button 
             onClick={onSaveProject}

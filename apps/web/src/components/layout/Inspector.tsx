@@ -18,7 +18,8 @@ import {
   CostEstimationResult,
   AdaptiveLayerResult,
   MouseEarResult,
-  AutoOrientResult
+  AutoOrientResult,
+  ExportProject3MFResponse
 } from "@shared/types/api";
 import { formatNumber } from "@/lib/utils";
 import { apiClient } from "@/lib/api-client";
@@ -52,22 +53,31 @@ import {
   Scale,
   Maximize,
   RotateCcw,
-  CircleDot
+  CircleDot,
+  Copy,
+  Trash2,
+  Box,
+  Package
 } from "lucide-react";
 
 interface InspectorProps {
   projectId: string;
   mesh: WorkingModel | null;
+  models?: WorkingModel[];
+  selectedModelId?: string | null;
   printer: PrinterProfile;
   printers: PrinterProfile[];
   printability?: PrintabilityAnalysis | null;
   operations?: OperationRecord[];
+  onSelectModel?: (modelId: string) => void;
   onPrinterChange?: (printer: PrinterProfile) => void;
   onOpenCreatePrinter?: () => void;
   onModelUpdated?: (model: WorkingModel) => void;
   onModelSliced?: (result: SliceModelResult) => void;
   onSlicePlaneChange?: (origin: [number, number, number], normal: [number, number, number]) => void;
   onOperationRecorded?: () => void;
+  onProjectRefreshed?: () => void;
+  onAutoArrange?: () => void;
 }
 
 type TabType = "dimensions" | "transform" | "orca" | "slice" | "repair" | "printability" | "export" | "history";
@@ -75,16 +85,21 @@ type TabType = "dimensions" | "transform" | "orca" | "slice" | "repair" | "print
 export function Inspector({
   projectId,
   mesh,
+  models = [],
+  selectedModelId,
   printer,
   printers,
   printability,
   operations = [],
+  onSelectModel,
   onPrinterChange,
   onOpenCreatePrinter,
   onModelUpdated,
   onModelSliced,
   onSlicePlaneChange,
   onOperationRecorded,
+  onProjectRefreshed,
+  onAutoArrange,
 }: InspectorProps) {
   const [activeTab, setActiveTab] = useState<TabType>("dimensions");
 
@@ -141,6 +156,9 @@ export function Inspector({
   const [exportFilename, setExportFilename] = useState<string>(mesh ? mesh.filename.replace(/\.[^/.]+$/, "") : "model");
   const [isExporting, setIsExporting] = useState(false);
   const [exportDownloadUrl, setExportDownloadUrl] = useState<string | null>(null);
+  const [isExporting3MF, setIsExporting3MF] = useState(false);
+  const [export3MFFilament, setExport3MFFilament] = useState<string>("Generic PLA");
+  const [export3MFResult, setExport3MFResult] = useState<ExportProject3MFResponse | null>(null);
 
   // Planar Slicing state
   const [sliceAxis, setSliceAxis] = useState<"Z" | "X" | "Y">("Z");
@@ -163,6 +181,14 @@ export function Inspector({
   const [isRepairing, setIsRepairing] = useState<boolean>(false);
   const [repairMessage, setRepairMessage] = useState<string | null>(null);
   const [repairReport, setRepairReport] = useState<MeshRepairReport | null>(null);
+
+  // Hollowing state
+  const [wallThickness, setWallThickness] = useState<number>(2.0);
+  const [addDrainHoles, setAddDrainHoles] = useState<boolean>(true);
+  const [drainHoleRadius, setDrainHoleRadius] = useState<number>(2.0);
+  const [drainHoleCount, setDrainHoleCount] = useState<number>(2);
+  const [isHollowing, setIsHollowing] = useState<boolean>(false);
+  const [hollowMessage, setHollowMessage] = useState<string | null>(null);
 
   const dims = useMemo<[number, number, number]>(() => {
     const dimensions = mesh?.bounds.dimensions_mm;
@@ -607,8 +633,107 @@ export function Inspector({
     }
   };
 
+  const handleExport3MF = async () => {
+    if (!projectId) return;
+    setIsExporting3MF(true);
+    setExport3MFResult(null);
+    try {
+      const res = await apiClient.exportProject3MF(projectId, {
+        filament_preset: export3MFFilament,
+      });
+      setExport3MFResult(res);
+      if (onOperationRecorded) onOperationRecorded();
+    } catch (err: any) {
+      alert(`3MF Export failed: ${err.message}`);
+    } finally {
+      setIsExporting3MF(false);
+    }
+  };
+
+  const handleHollow = async () => {
+    if (!mesh || !projectId) return;
+    setIsHollowing(true);
+    setHollowMessage(null);
+    try {
+      const res = await apiClient.hollowModel(projectId, mesh.id, {
+        wall_thickness_mm: wallThickness,
+        add_drain_holes: addDrainHoles,
+        drain_hole_radius_mm: drainHoleRadius,
+        drain_hole_count: drainHoleCount,
+      });
+      setHollowMessage(`Model hollowed (${res.wall_thickness_mm}mm wall). Saved ${res.volume_saved_cm3 ? res.volume_saved_cm3.toFixed(2) + ' cm³' : 'material'}!`);
+      if (onModelUpdated) onModelUpdated(res.hollowed_model);
+      if (onOperationRecorded) onOperationRecorded();
+      if (onProjectRefreshed) onProjectRefreshed();
+    } catch (err: any) {
+      setHollowMessage(`Hollow failed: ${err.message}`);
+    } finally {
+      setIsHollowing(false);
+    }
+  };
+
+  const handleDuplicate = async () => {
+    if (!mesh || !projectId) return;
+    try {
+      const dup = await apiClient.duplicateModel(projectId, mesh.id);
+      if (onProjectRefreshed) onProjectRefreshed();
+      if (onSelectModel) onSelectModel(dup.id);
+    } catch (err: any) {
+      alert(`Duplicate failed: ${err.message}`);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!mesh || !projectId) return;
+    if (!confirm(`Are you sure you want to remove '${mesh.filename}'?`)) return;
+    try {
+      await apiClient.deleteModel(projectId, mesh.id);
+      if (onProjectRefreshed) onProjectRefreshed();
+    } catch (err: any) {
+      alert(`Delete failed: ${err.message}`);
+    }
+  };
+
   return (
     <aside className="w-84 bg-slate-950/90 backdrop-blur-md border-l border-slate-800/80 flex flex-col h-full text-slate-200 select-none overflow-hidden">
+      {/* Model Selector / Scene Graph Bar */}
+      {models && models.length > 0 && (
+        <div className="p-2 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <Box className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <select
+              value={mesh?.id || selectedModelId || ""}
+              onChange={(e) => onSelectModel && onSelectModel(e.target.value)}
+              className="bg-slate-950 border border-slate-700 text-[11px] font-mono text-slate-200 rounded px-2 py-1 flex-1 truncate outline-none focus:border-cyan-400"
+            >
+              {models.map((m, idx) => (
+                <option key={m.id} value={m.id}>
+                  {idx + 1}. {m.filename}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={handleDuplicate}
+              disabled={!mesh}
+              className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-cyan-300 transition cursor-pointer"
+              title="Duplicate Model"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={!mesh}
+              className="p-1.5 hover:bg-rose-950/40 rounded text-slate-400 hover:text-rose-400 transition cursor-pointer"
+              title="Delete Model"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Panel Tab Navigation */}
       <div className="h-10 border-b border-slate-800/80 flex items-center bg-slate-900/60 shrink-0 px-1">
         <button
@@ -1778,6 +1903,90 @@ export function Inspector({
               )}
               <span>Run Auto-Repair & Heal Mesh</span>
             </button>
+
+            {/* Hollowing & Drain Holes Studio */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-3 pt-3 mt-4">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <SplitSquareVertical className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Hollow Solid Shell</span>
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/60">
+                  Resin & Filament Saver
+                </span>
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-slate-400">Wall Thickness:</span>
+                    <span className="text-cyan-300 font-mono">{wallThickness} mm</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="1.0"
+                    max="5.0"
+                    step="0.2"
+                    value={wallThickness}
+                    onChange={(e) => setWallThickness(parseFloat(e.target.value))}
+                    className="w-full accent-cyan-400 cursor-pointer"
+                  />
+                </div>
+
+                <label className="flex items-center space-x-2 text-[11px] text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={addDrainHoles}
+                    onChange={(e) => setAddDrainHoles(e.target.checked)}
+                    className="accent-cyan-400 rounded cursor-pointer"
+                  />
+                  <span>Add Bottom Drain Holes</span>
+                </label>
+
+                {addDrainHoles && (
+                  <div className="grid grid-cols-2 gap-2 pl-4">
+                    <div>
+                      <label className="text-[10px] text-slate-400 block mb-1">Hole Radius (mm)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        step="0.5"
+                        value={drainHoleRadius}
+                        onChange={(e) => setDrainHoleRadius(parseFloat(e.target.value) || 2.0)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-slate-100 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 block mb-1">Hole Count</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="6"
+                        value={drainHoleCount}
+                        onChange={(e) => setDrainHoleCount(parseInt(e.target.value) || 2)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-slate-100 text-xs"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {hollowMessage && (
+                  <div className="p-2 rounded bg-cyan-950/30 border border-cyan-500/40 text-cyan-300 text-[10px]">
+                    {hollowMessage}
+                  </div>
+                )}
+
+                <button
+                  onClick={handleHollow}
+                  disabled={!mesh || isHollowing}
+                  className="w-full py-2 bg-slate-800 hover:bg-slate-700 border border-cyan-500/40 text-cyan-300 font-bold rounded transition flex items-center justify-center space-x-1.5 text-xs disabled:opacity-50 cursor-pointer"
+                >
+                  {isHollowing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
+                  <span>Hollow Geometry ({wallThickness}mm Shell)</span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1902,11 +2111,68 @@ export function Inspector({
             <button
               onClick={handleExport}
               disabled={!mesh || isExporting}
-              className="w-full py-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-bold rounded transition flex items-center justify-center space-x-2 disabled:opacity-50"
+              className="w-full py-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-bold rounded transition flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
             >
               {isExporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-              <span>Generate Export</span>
+              <span>Export Single Mesh</span>
             </button>
+
+            {/* ORCASLICER & BAMBU STUDIO 3MF BUNDLE EXPORT */}
+            <div className="pt-4 border-t border-slate-800/80 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                  <Package className="w-3.5 h-3.5" />
+                  <span>OrcaSlicer / Bambu 3MF</span>
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/30">
+                  MULTI-MODEL
+                </span>
+              </div>
+
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Bundles all active models, plater coordinates, orientations, and scales into a single 3MF project container ready for OrcaSlicer or Bambu Studio.
+              </p>
+
+              <div className="space-y-1">
+                <label className="text-slate-400 text-[10px]">Filament Preset</label>
+                <select
+                  value={export3MFFilament}
+                  onChange={(e) => setExport3MFFilament(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:outline-none focus:border-cyan-400"
+                >
+                  <option value="Generic PLA">Generic PLA</option>
+                  <option value="Bambu PLA Basic">Bambu PLA Basic</option>
+                  <option value="Generic PETG">Generic PETG</option>
+                  <option value="Generic ABS/ASA">Generic ABS / ASA</option>
+                  <option value="Generic TPU 95A">Generic TPU 95A</option>
+                </select>
+              </div>
+
+              {export3MFResult && (
+                <div className="p-2.5 bg-cyan-950/40 border border-cyan-500/40 rounded space-y-2">
+                  <p className="text-[11px] text-cyan-300 flex items-center space-x-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>3MF Project Container Ready ({export3MFResult.models_exported} models, {(export3MFResult.file_size_bytes / 1024).toFixed(1)} KB)</span>
+                  </p>
+                  <a
+                    href={`http://localhost:8000${export3MFResult.download_url}`}
+                    download
+                    className="block text-center py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded text-xs transition"
+                  >
+                    Download {export3MFResult.filename}
+                  </a>
+                </div>
+              )}
+
+              <button
+                onClick={handleExport3MF}
+                disabled={isExporting3MF || !models || models.length === 0}
+                className="w-full py-2 bg-slate-800 hover:bg-slate-700 border border-cyan-500/50 text-cyan-300 font-bold rounded transition flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer text-xs"
+              >
+                {isExporting3MF ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Package className="w-3.5 h-3.5" />}
+                <span>Export Project as 3MF</span>
+              </button>
+            </div>
           </div>
         )}
 

@@ -105,11 +105,14 @@ export default function WorkbenchPage() {
     z: 0,
   });
 
+  // Active Selected Model ID
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+
   // Active Model from project
+  const workingModels = activeProject?.working_models || [];
   const activeWorkingModel: WorkingModel | null = 
-    activeProject?.working_models && activeProject.working_models.length > 0 
-      ? activeProject.working_models[activeProject.working_models.length - 1] 
-      : null;
+    workingModels.find((m) => m.id === selectedModelId) ||
+    (workingModels.length > 0 ? workingModels[workingModels.length - 1] : null);
 
   // 1. Backend Health Check
   const checkHealth = useCallback(async (signal?: AbortSignal) => {
@@ -445,10 +448,13 @@ export default function WorkbenchPage() {
           <ViewportContainer
             printer={activePrinter}
             model={activeWorkingModel}
+            models={workingModels}
+            activeModelId={activeWorkingModel?.id || null}
             modelBuffer={activeModelBuffer}
             activeTool={activeTool}
             slicePlaneOrigin={slicePlaneOrigin}
             slicePlaneNormal={slicePlaneNormal}
+            onSelectModel={(id) => setSelectedModelId(id)}
             onTransformChange={handleViewportTransformChange}
             onCursorCoordinates={(coords: { x: number; y: number; z: number }) => setCursorCoords(coords)}
             className="w-full h-full"
@@ -460,15 +466,20 @@ export default function WorkbenchPage() {
         <Inspector
           projectId={activeProject?.id || ""}
           mesh={activeWorkingModel}
+          models={workingModels}
+          selectedModelId={activeWorkingModel?.id || null}
           printer={activePrinter}
           printers={printers}
           operations={activeProject?.operations || []}
+          onSelectModel={(id) => setSelectedModelId(id)}
           onPrinterChange={handlePrinterChange}
           onOpenCreatePrinter={() => setIsCreatePrinterDialogOpen(true)}
           onModelUpdated={handleModelUpdated}
           onModelSliced={handleModelSliced}
           onSlicePlaneChange={handleSlicePlaneChange}
           onOperationRecorded={handleRefreshOperations}
+          onProjectRefreshed={handleRefreshOperations}
+          onAutoArrange={handleAutoArrange}
         />
       </div>
 

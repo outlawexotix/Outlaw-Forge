@@ -32,7 +32,7 @@ class ScaleModelPayload(BaseModel):
 
 
 class ExportModelPayload(BaseModel):
-    format: Literal["stl", "obj", "glb"] = Field(
+    format: Literal["stl", "obj", "glb", "3mf"] = Field(
         default="stl", description="Target export 3D format"
     )
     filename: Optional[str] = Field(
@@ -199,3 +199,89 @@ class RepairModelResult(BaseModel):
     message: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class HollowModelPayload(BaseModel):
+    wall_thickness_mm: float = Field(
+        default=2.0, ge=0.4, le=20.0, description="Shell wall thickness in mm"
+    )
+    add_drain_holes: bool = Field(
+        default=True, description="Add drain holes at the bottom of the hollowed model"
+    )
+    drain_hole_radius_mm: float = Field(
+        default=2.0, ge=0.5, le=15.0, description="Radius of drain holes in mm"
+    )
+    drain_hole_count: int = Field(
+        default=2, ge=1, le=8, description="Number of drain holes to punch"
+    )
+
+
+class HollowModelResult(BaseModel):
+    hollowed_model: WorkingModel
+    wall_thickness_mm: float
+    drain_holes_added: int
+    volume_saved_cm3: Optional[float] = None
+    message: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ArrangeItemPlacement(BaseModel):
+    model_id: str
+    filename: str
+    position_mm: List[float] = Field(description="[X, Y, Z] bed coordinates in mm")
+    rotation_deg: List[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+
+
+class ArrangeProjectPayload(BaseModel):
+    spacing_mm: float = Field(
+        default=5.0, ge=1.0, le=50.0, description="Clearance margin between models in mm"
+    )
+    bed_margin_mm: float = Field(
+        default=10.0, ge=0.0, le=50.0, description="Margin distance from bed perimeter in mm"
+    )
+    printer_id: Optional[str] = Field(
+        default=None, description="Optional printer profile ID to retrieve bed dimensions"
+    )
+
+
+class ArrangeProjectResult(BaseModel):
+    project_id: str
+    models_arranged: int
+    placements: List[ArrangeItemPlacement]
+    all_fit: bool
+    message: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExportProject3MFPayload(BaseModel):
+    filename: Optional[str] = Field(
+        default=None, description="Custom 3MF export filename"
+    )
+    plate_name: Optional[str] = Field(
+        default="Plate 1", description="Build plate name"
+    )
+    filament_id: Optional[str] = Field(
+        default=None, description="Optional filament profile ID to attach to 3MF metadata"
+    )
+    filament_preset: Optional[str] = Field(
+        default="Generic PLA", description="Preset filament name"
+    )
+
+
+class ExportProject3MFResponse(BaseModel):
+    project_id: Optional[str] = None
+    filename: str
+    storage_path: Optional[str] = None
+    download_url: str
+    file_size_bytes: int
+    models_exported: int = 0
+    models_included: int = 0
+    printer_model: Optional[str] = None
+    message: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+

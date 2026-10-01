@@ -85,7 +85,25 @@ export interface PrinterProfile {
   created_at?: string;
 }
 
-export type OperationType = 'IMPORT' | 'SCALE' | 'ROTATE' | 'CENTER' | 'LAY_FLAT' | 'SLICE' | 'REPAIR' | 'EXPORT';
+export type OperationType =
+  | 'IMPORT'
+  | 'SCALE'
+  | 'ROTATE'
+  | 'CENTER'
+  | 'LAY_FLAT'
+  | 'SLICE'
+  | 'REPAIR'
+  | 'EXPORT'
+  | 'CALIBRATION_GENERATE'
+  | 'AUTO_ORIENT'
+  | 'AUTO_ARRANGE'
+  | 'MOUSE_EAR_BRIM'
+  | 'ADAPTIVE_LAYERS'
+  | 'HOLLOW'
+  | 'DUPLICATE'
+  | 'DELETE'
+  | 'ARRANGE'
+  | 'EXPORT_3MF';
 
 export interface OperationRecord {
   id: string;
@@ -239,3 +257,234 @@ export interface RepairModelResult {
   report: MeshRepairReport;
   message: string;
 }
+
+// --- OrcaSlicer Calibration Studio Types ---
+
+export type CalibrationType =
+  | 'temp_tower'
+  | 'flow_rate'
+  | 'retraction_tower'
+  | 'tolerance_gauge'
+  | 'overhang_benchmark'
+  | 'calibration_cube_v2'
+  | 'max_volumetric_speed';
+
+export interface CalibrationGeneratePayload {
+  calibration_type: CalibrationType;
+  start_temp_c?: number;
+  end_temp_c?: number;
+  temp_step_c?: number;
+  flow_rate_start_pct?: number;
+  flow_rate_end_pct?: number;
+  flow_rate_step_pct?: number;
+  retraction_start_mm?: number;
+  retraction_end_mm?: number;
+  retraction_step_mm?: number;
+  tolerance_min_mm?: number;
+  tolerance_max_mm?: number;
+  tolerance_step_mm?: number;
+  cube_size_mm?: number;
+  custom_name?: string;
+}
+
+export interface CalibrationGenerateResult {
+  model: WorkingModel;
+  calibration_type: CalibrationType;
+  suggested_slicer_notes: string[];
+  message: string;
+}
+
+// --- OrcaSlicer Auto-Orient Types ---
+
+export interface AutoOrientPayload {
+  overhang_weight?: number;
+  height_weight?: number;
+  bed_contact_weight?: number;
+  critical_angle_deg?: number;
+}
+
+export interface AutoOrientResult {
+  oriented_model: WorkingModel;
+  optimal_rotation_deg: [number, number, number];
+  original_overhang_area_cm2: number;
+  optimized_overhang_area_cm2: number;
+  reduction_percentage: number;
+  message: string;
+}
+
+// --- OrcaSlicer Auto-Arrange / Multi-Model Bed Nesting Types ---
+
+export interface AutoArrangePayload {
+  spacing_mm?: number;
+  bed_width_mm?: number;
+  bed_depth_mm?: number;
+  model_ids?: string[];
+}
+
+export interface ModelPlacement {
+  model_id: string;
+  x_offset_mm: number;
+  y_offset_mm: number;
+  rotation_deg: number;
+  bounds: MeshBounds;
+}
+
+export interface AutoArrangeResult {
+  arranged_models: WorkingModel[];
+  placements: ModelPlacement[];
+  fits_bed: boolean;
+  message: string;
+}
+
+// --- OrcaSlicer Mouse-Ear Anti-Warping Brim Types ---
+
+export interface MouseEarPayload {
+  radius_mm?: number;
+  thickness_mm?: number;
+  corner_angle_threshold_deg?: number;
+  auto_detect_corners?: boolean;
+  custom_centers_mm?: [number, number][];
+}
+
+export interface MouseEarResult {
+  modified_model: WorkingModel;
+  ears_added_count: number;
+  ear_positions_mm: [number, number][];
+  message: string;
+}
+
+// --- OrcaSlicer Adaptive Layer Height Profiler Types ---
+
+export interface AdaptiveLayerPayload {
+  min_layer_height_mm?: number;
+  max_layer_height_mm?: number;
+  nominal_layer_height_mm?: number;
+  step_size_mm?: number;
+  smoothness_factor?: number;
+}
+
+export interface AdaptiveLayerCurvePoint {
+  z_height_mm: number;
+  layer_height_mm: number;
+  slope_deg: number;
+  layer_index: number;
+}
+
+export interface AdaptiveLayerResult {
+  model_id: string;
+  total_layers_nominal: number;
+  total_layers_adaptive: number;
+  estimated_time_nominal_min: number;
+  estimated_time_adaptive_min: number;
+  time_savings_pct: number;
+  layer_curve: AdaptiveLayerCurvePoint[];
+  message: string;
+}
+
+// --- OrcaSlicer Filament Library & Print Cost Types ---
+
+export type FilamentMaterial =
+  | 'PLA'
+  | 'PETG'
+  | 'ABS'
+  | 'ASA'
+  | 'TPU'
+  | 'PC'
+  | 'PA-CF'
+  | 'PETG-CF'
+  | 'Silk PLA';
+
+export interface FilamentProfile {
+  id: string;
+  name: string;
+  material: FilamentMaterial;
+  density_g_cm3: number;
+  nozzle_temp_c: number;
+  bed_temp_c: number;
+  cost_per_kg_usd: number;
+  shrinkage_factor_pct: number;
+  recommended_speed_mm_s: number;
+  color_hex?: string;
+  notes?: string;
+}
+
+export interface CostEstimationPayload {
+  filament_id?: string;
+  custom_density_g_cm3?: number;
+  custom_cost_per_kg_usd?: number;
+  infill_percentage?: number;
+  wall_count?: number;
+  top_bottom_layers?: number;
+}
+
+export interface CostEstimationResult {
+  model_id: string;
+  material_name: string;
+  estimated_mass_grams: number;
+  estimated_filament_length_meters: number;
+  estimated_material_cost_usd: number;
+  model_volume_cm3: number;
+  effective_infill_volume_cm3: number;
+  message: string;
+}
+
+// --- CAD Hollow and Auto-Arrange Types ---
+
+export interface HollowModelPayload {
+  wall_thickness_mm?: number;
+  add_drain_holes?: boolean;
+  drain_hole_radius_mm?: number;
+  drain_hole_count?: number;
+}
+
+export interface HollowModelResult {
+  hollowed_model: WorkingModel;
+  wall_thickness_mm: number;
+  drain_holes_added: number;
+  volume_saved_cm3?: number | null;
+  message: string;
+}
+
+export interface ArrangeItemPlacement {
+  model_id: string;
+  filename: string;
+  position_mm: [number, number, number];
+  rotation_deg?: [number, number, number];
+}
+
+export interface ArrangeProjectPayload {
+  spacing_mm?: number;
+  bed_margin_mm?: number;
+  printer_id?: string;
+}
+
+export interface ArrangeProjectResult {
+  project_id: string;
+  models_arranged: number;
+  placements: ArrangeItemPlacement[];
+  all_fit: boolean;
+  message: string;
+}
+
+export interface ExportProject3MFPayload {
+  filename?: string;
+  plate_name?: string;
+  filament_id?: string;
+  filament_preset?: string;
+}
+
+export interface ExportProject3MFResponse {
+  project_id?: string;
+  download_url: string;
+  filename: string;
+  storage_path?: string;
+  models_exported?: number;
+  models_included?: number;
+  file_size_bytes: number;
+  printer_model?: string;
+  message: string;
+}
+
+
+
+

@@ -272,6 +272,7 @@ class ProjectRepository:
         """Add a source file entry for a project."""
         src_id = f"src_{uuid.uuid4().hex[:12]}"
         now_utc = datetime.now(timezone.utc).isoformat()
+        storage_path_str = str(storage_path)
 
         await self.conn.execute(
             """
@@ -279,7 +280,7 @@ class ProjectRepository:
                 id, project_id, filename, file_format, file_size_bytes, storage_path, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (src_id, project_id, filename, file_format, file_size_bytes, storage_path, now_utc),
+            (src_id, project_id, filename, file_format, file_size_bytes, storage_path_str, now_utc),
         )
         await self.conn.commit()
 
@@ -289,7 +290,7 @@ class ProjectRepository:
             filename=filename,
             file_format=file_format,
             file_size_bytes=file_size_bytes,
-            storage_path=storage_path,
+            storage_path=storage_path_str,
             created_at=now_utc,
         )
 
@@ -311,9 +312,11 @@ class ProjectRepository:
         """Add a working model entry for a project."""
         model_id = f"wm_{uuid.uuid4().hex[:12]}"
         now_utc = datetime.now(timezone.utc).isoformat()
+        storage_path_str = str(storage_path)
 
         bounds_json = json.dumps(bounds.model_dump())
         transform_json = json.dumps(transform.model_dump())
+
 
         await self.conn.execute(
             """
@@ -329,8 +332,9 @@ class ProjectRepository:
                 source_file_id,
                 filename,
                 file_format,
-                storage_path,
+                storage_path_str,
                 "mm",
+
                 bounds_json,
                 triangle_count,
                 vertex_count,
@@ -356,8 +360,9 @@ class ProjectRepository:
             source_file_id=source_file_id,
             filename=filename,
             file_format=file_format,
-            storage_path=storage_path,
+            storage_path=storage_path_str,
             units="mm",
+
             bounds=bounds,
             triangle_count=triangle_count,
             vertex_count=vertex_count,
@@ -519,4 +524,14 @@ class ProjectRepository:
             user_summary=user_summary,
             success=success,
         )
+
+    async def delete_working_model(self, model_id: str) -> bool:
+        """Delete a working model from database."""
+        cursor = await self.conn.execute(
+            "DELETE FROM working_models WHERE id = ?",
+            (model_id,),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
 
