@@ -81,7 +81,7 @@ export function MaskSmithStudio({
       }
     }
     loadAnalysis();
-  }, [mesh?.id, projectId]);
+  }, [mesh, projectId]);
 
   const handleFitScale = async () => {
     if (!mesh || !projectId) return;

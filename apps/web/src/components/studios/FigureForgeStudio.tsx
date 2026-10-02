@@ -83,7 +83,7 @@ export function FigureForgeStudio({
       }
     }
     loadCOM();
-  }, [mesh?.id, projectId]);
+  }, [mesh, projectId]);
 
   const handleGeneratePlinth = async () => {
     if (!mesh || !projectId) return;

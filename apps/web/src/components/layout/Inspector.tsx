@@ -217,7 +217,7 @@ export function Inspector({
       else if (sliceAxis === "X") setSlicePos(0);
       else if (sliceAxis === "Y") setSlicePos(0);
     }
-  }, [mesh?.id, sliceAxis, meshHeight]);
+  }, [mesh, sliceAxis, meshHeight]);
 
   // Sync 3D cutting plane in viewport
   useEffect(() => {
