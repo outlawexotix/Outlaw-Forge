@@ -53,7 +53,8 @@ export const BuildPlate: React.FC<BuildPlateProps> = ({
       {/* 1. Physical Build Sheet Surface with Procedural OrcaSlicer PEI Shader */}
       <group position={[0, 0, 0]}>
         {/* Top Surface Quad for Shader */}
-        <mesh receiveShadow position={[0, 0, 0]}>
+        {/* Keep the shader surface above the base top face to avoid z-fighting. */}
+        <mesh receiveShadow position={[0, 0, 0.05]}>
           <planeGeometry args={[bedWidth, bedDepth]} />
           <primitive object={bedMaterial} attach="material" />
         </mesh>

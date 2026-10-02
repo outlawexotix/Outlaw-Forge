@@ -9,6 +9,7 @@ import numpy as np
 import trimesh
 from fastapi import HTTPException, status
 
+from app.core.config import settings
 from app.models.mesh import (
     ExportModelPayload,
     ExportResult,
@@ -23,7 +24,7 @@ from app.models.mesh import (
 from app.models.project import MeshBounds, MeshTransform
 
 ALLOWED_EXTENSIONS: Set[str] = {"stl", "obj", "glb", "gltf", "3mf"}
-MAX_FILE_SIZE_BYTES: int = 100 * 1024 * 1024  # 100 MB
+MAX_FILE_SIZE_BYTES: int = settings.MAX_UPLOAD_SIZE_BYTES
 
 
 class MeshValidationError(HTTPException):
@@ -1030,5 +1031,3 @@ repair_mesh = MeshService.repair_mesh
 hollow_mesh = MeshService.hollow_mesh
 arrange_models_on_bed = MeshService.arrange_models_on_bed
 export_project_3mf = MeshService.export_project_3mf
-
-

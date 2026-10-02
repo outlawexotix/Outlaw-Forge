@@ -67,26 +67,53 @@ export class ApiClient {
    * List all projects
    */
   async listProjects(): Promise<Project[]> {
-    const res = await fetch(`${this.baseUrl}/projects`, {
-      method: "GET",
-      headers: { "Accept": "application/json" },
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(`Failed to list projects: ${res.statusText}`);
-    return res.json();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(`${this.baseUrl}/projects`, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`Failed to list projects: ${res.statusText}`);
+      return res.json();
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new Error("Loading projects timed out. Check that the API server is running.");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /**
    * Create a new project
    */
   async createProject(payload: ProjectCreatePayload): Promise<Project> {
-    const res = await fetch(`${this.baseUrl}/projects`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error(`Failed to create project: ${res.statusText}`);
-    return res.json();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(`${this.baseUrl}/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => null);
+        throw new Error(errorBody?.detail || `Failed to create project: ${res.statusText}`);
+      }
+      return res.json();
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new Error("Project creation timed out. Check that the API server is running.");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /**
@@ -604,4 +631,3 @@ export class ApiClient {
 }
 
 export const apiClient = new ApiClient();
-

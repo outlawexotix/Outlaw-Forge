@@ -5,13 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.api import api_router
 from app.api.v1.endpoints import calibration, health, models, printers, projects, studios
 from app.core.config import settings
-from app.db.database import init_db
+from app.db.database import ensure_db_initialized
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SQLite database schema and seed data
-    await init_db()
+    # Fail startup before serving requests if the schema cannot be initialized.
+    await ensure_db_initialized()
     yield
 
 

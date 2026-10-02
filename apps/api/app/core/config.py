@@ -23,7 +23,8 @@ class Settings(BaseSettings):
 
     # Storage
     STORAGE_BASE_DIR: str = os.getenv("STORAGE_BASE_DIR", "data")
-    MAX_UPLOAD_SIZE_BYTES: int = 100 * 1024 * 1024  # 100 MB
+    # Large mesh uploads can be hundreds of megabytes, especially high-resolution STL files.
+    MAX_UPLOAD_SIZE_BYTES: int = 500 * 1024 * 1024  # 500 MB
 
     model_config = SettingsConfigDict(
         env_file=".env",

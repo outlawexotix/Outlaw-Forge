@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import * as THREE from 'three';
+import type { ThreeEvent } from '@react-three/fiber';
 import { TransformControls } from '@react-three/drei';
 import { WorkingModel, PrinterProfile } from '@shared/types/api';
 import {
@@ -103,6 +104,12 @@ export interface ModelRendererProps {
    */
   onTransformChange?: (transform: ModelTransformEvent) => void;
 
+  /** Fired when the mesh is clicked in select mode. */
+  onSelect?: () => void;
+
+  /** Fired when the user opens the model context menu. */
+  onContextMenu?: (clientX: number, clientY: number) => void;
+
   /**
    * Callback fired when user begins or ends dragging the transform gizmo
    */
@@ -183,6 +190,8 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
   isSelected = true,
   onModelLoaded,
   onTransformChange,
+  onSelect,
+  onContextMenu,
   onGizmoDragging,
   onOrientToFace,
   onError,
@@ -195,6 +204,8 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
   const modelGroupRef = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
   const transformControlsRef = useRef<any>(null);
+  const directDragRef = useRef<{ pointerId: number; offset: THREE.Vector3 } | null>(null);
+  const isTransformDraggingRef = useRef(false);
 
   const bedWidth = printer.build_width_mm || 220;
   const bedDepth = printer.build_depth_mm || 220;
@@ -325,35 +336,46 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
     scale: [1, 1, 1],
   });
 
-  const lastModelIdRef = useRef<string | null>(null);
+  const positionX = model?.transform?.position_mm?.[0] ?? 0;
+  const positionY = model?.transform?.position_mm?.[1] ?? 0;
+  const positionZ = model?.transform?.position_mm?.[2] ?? 0;
+  const rotationX = model?.transform?.rotation_deg?.[0] ?? 0;
+  const rotationY = model?.transform?.rotation_deg?.[1] ?? 0;
+  const rotationZ = model?.transform?.rotation_deg?.[2] ?? 0;
+  const scaleX = model?.transform?.scale_factors?.[0] ?? 1;
+  const scaleY = model?.transform?.scale_factors?.[1] ?? 1;
+  const scaleZ = model?.transform?.scale_factors?.[2] ?? 1;
+  const bakedGeometry = /(?:^|_)\b(?:scaled|rotated|oriented)_/i.test(model?.storage_path || '');
 
   useEffect(() => {
-    const currentId = model?.id || 'sample';
-    if (lastModelIdRef.current !== currentId) {
-      lastModelIdRef.current = currentId;
-      const initialPos: [number, number, number] = [
-        model?.transform?.position_mm?.[0] ?? 0,
-        model?.transform?.position_mm?.[1] ?? 0,
-        model?.transform?.position_mm?.[2] ?? 0,
-      ];
-      const initialRot: [number, number, number] = [
-        model?.transform?.rotation_deg?.[0] ? (model.transform.rotation_deg[0] * Math.PI) / 180 : 0,
-        model?.transform?.rotation_deg?.[1] ? (model.transform.rotation_deg[1] * Math.PI) / 180 : 0,
-        model?.transform?.rotation_deg?.[2] ? (model.transform.rotation_deg[2] * Math.PI) / 180 : 0,
-      ];
-      const initialScl: [number, number, number] = [
-        model?.transform?.scale_factors?.[0] ?? 1,
-        model?.transform?.scale_factors?.[1] ?? 1,
-        model?.transform?.scale_factors?.[2] ?? 1,
-      ];
-      setModelTransform({ position: initialPos, rotation: initialRot, scale: initialScl });
-      if (modelGroupRef.current) {
-        modelGroupRef.current.position.set(...initialPos);
-        modelGroupRef.current.rotation.set(...initialRot);
-        modelGroupRef.current.scale.set(...initialScl);
-      }
+    if (isTransformDraggingRef.current) return;
+
+    const initialPos: [number, number, number] = [
+      positionX, positionY, positionZ,
+    ];
+    const initialRot: [number, number, number] = [
+      ((bakedGeometry ? 0 : rotationX) * Math.PI) / 180,
+      ((bakedGeometry ? 0 : rotationY) * Math.PI) / 180,
+      ((bakedGeometry ? 0 : rotationZ) * Math.PI) / 180,
+    ];
+    const initialScl: [number, number, number] = [
+      bakedGeometry ? 1 : scaleX,
+      bakedGeometry ? 1 : scaleY,
+      bakedGeometry ? 1 : scaleZ,
+    ];
+    setModelTransform({ position: initialPos, rotation: initialRot, scale: initialScl });
+    if (modelGroupRef.current) {
+      modelGroupRef.current.position.set(...initialPos);
+      modelGroupRef.current.rotation.set(...initialRot);
+      modelGroupRef.current.scale.set(...initialScl);
     }
-  }, [model?.id, model?.transform?.position_mm, model?.transform?.rotation_deg, model?.transform?.scale_factors, bedWidth, bedDepth]);
+  }, [
+    model?.id,
+    positionX, positionY, positionZ,
+    rotationX, rotationY, rotationZ,
+    scaleX, scaleY, scaleZ, bakedGeometry,
+    bedWidth, bedDepth,
+  ]);
 
   // Live transform event handling while user drags gizmo
   const handleTransformChange = useCallback(() => {
@@ -364,28 +386,108 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
     const rot = group.rotation;
     const scl = group.scale;
 
+    // TransformControls mutates the attached Three.js object directly. Keep
+    // React state in lockstep during the drag so a parent render cannot write
+    // stale props back onto the object and cause snapping/jitter.
+    const nextTransform = {
+      position: [pos.x, pos.y, pos.z] as [number, number, number],
+      rotation: [rot.x, rot.y, rot.z] as [number, number, number],
+      scale: [scl.x, scl.y, scl.z] as [number, number, number],
+    };
+    setModelTransform(nextTransform);
+
     if (onTransformChange) {
       onTransformChange({
-        position: [
-          Math.round(pos.x * 100) / 100,
-          Math.round(pos.y * 100) / 100,
-          Math.round(pos.z * 100) / 100,
-        ],
+        position: nextTransform.position,
         rotation: [
-          Math.round(((rot.x * 180) / Math.PI) * 10) / 10,
-          Math.round(((rot.y * 180) / Math.PI) * 10) / 10,
-          Math.round(((rot.z * 180) / Math.PI) * 10) / 10,
+          (nextTransform.rotation[0] * 180) / Math.PI,
+          (nextTransform.rotation[1] * 180) / Math.PI,
+          (nextTransform.rotation[2] * 180) / Math.PI,
         ],
         scale: [
-          Math.round(scl.x * 1000) / 1000,
-          Math.round(scl.y * 1000) / 1000,
-          Math.round(scl.z * 1000) / 1000,
+          nextTransform.scale[0],
+          nextTransform.scale[1],
+          nextTransform.scale[2],
         ],
       });
     }
   }, [onTransformChange]);
 
+  const handleDirectPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
+    if (!isSelected || activeTool !== 'select' || event.button !== 0 || !modelGroupRef.current) return;
+    event.stopPropagation();
+    onSelect?.();
+
+    const parent = modelGroupRef.current.parent;
+    if (!parent) return;
+    const hit = new THREE.Vector3();
+    const plate = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    if (!event.ray.intersectPlane(plate, hit)) return;
+    const localHit = parent.worldToLocal(hit);
+    directDragRef.current = {
+      pointerId: event.pointerId,
+      offset: new THREE.Vector3(
+        modelGroupRef.current.position.x - localHit.x,
+        modelGroupRef.current.position.y - localHit.y,
+        0,
+      ),
+    };
+    // Keep the prop-sync effect out of the drag loop. The parent receives each
+    // position update, but must not immediately write a stale transform back.
+    isTransformDraggingRef.current = true;
+    (event.target as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture?.(event.pointerId);
+    onGizmoDragging?.(true);
+  }, [activeTool, isSelected, onGizmoDragging, onSelect]);
+
+  const handleDirectPointerMove = useCallback((event: ThreeEvent<PointerEvent>) => {
+    const drag = directDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !modelGroupRef.current) return;
+    event.stopPropagation();
+    const parent = modelGroupRef.current.parent;
+    if (!parent) return;
+    const hit = new THREE.Vector3();
+    const plate = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    if (!event.ray.intersectPlane(plate, hit)) return;
+    const localHit = parent.worldToLocal(hit);
+    modelGroupRef.current.position.x = localHit.x + drag.offset.x;
+    modelGroupRef.current.position.y = localHit.y + drag.offset.y;
+    handleTransformChange();
+  }, [handleTransformChange]);
+
+  const handleDirectPointerUp = useCallback((event: ThreeEvent<PointerEvent>) => {
+    if (!directDragRef.current || directDragRef.current.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    (event.target as unknown as { releasePointerCapture?: (pointerId: number) => void }).releasePointerCapture?.(event.pointerId);
+    directDragRef.current = null;
+    isTransformDraggingRef.current = false;
+    onGizmoDragging?.(false);
+    handleTransformChange();
+  }, [handleTransformChange, onGizmoDragging]);
+
+  const handleDirectPointerCancel = useCallback((event: ThreeEvent<PointerEvent>) => {
+    if (!directDragRef.current || directDragRef.current.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    directDragRef.current = null;
+    isTransformDraggingRef.current = false;
+    onGizmoDragging?.(false);
+  }, [onGizmoDragging]);
+
+  const meshInteractionHandlers = {
+    onClick: (event: ThreeEvent<MouseEvent>) => { event.stopPropagation(); onSelect?.(); },
+    onPointerDown: handleDirectPointerDown,
+    onPointerMove: handleDirectPointerMove,
+    onPointerUp: handleDirectPointerUp,
+    onPointerCancel: handleDirectPointerCancel,
+    onContextMenu: (event: ThreeEvent<MouseEvent>) => {
+      event.stopPropagation();
+      event.nativeEvent.preventDefault();
+      onSelect?.();
+      onContextMenu?.(event.nativeEvent.clientX, event.nativeEvent.clientY);
+    },
+  };
+
   const handleGizmoRelease = useCallback(() => {
+    isTransformDraggingRef.current = false;
     onGizmoDragging?.(false);
     if (!modelGroupRef.current) return;
     const group = modelGroupRef.current;
@@ -497,6 +599,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
             castShadow
             receiveShadow
             material={overhangMaterial}
+            {...meshInteractionHandlers}
           />
         ) : effectiveRenderMode === 'layer_lines' ? (
           <mesh
@@ -505,6 +608,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
             castShadow
             receiveShadow
             material={layerLinesMaterial}
+            {...meshInteractionHandlers}
           />
         ) : effectiveRenderMode === 'cross_section' ? (
           <mesh
@@ -513,6 +617,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
             castShadow
             receiveShadow
             material={crossSectionMaterial}
+            {...meshInteractionHandlers}
           />
         ) : (
           <mesh
@@ -520,11 +625,13 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
             geometry={geometry}
             castShadow
             receiveShadow
+            {...meshInteractionHandlers}
           >
             <meshStandardMaterial
               color={color}
               roughness={0.25}
               metalness={0.1}
+              side={THREE.DoubleSide}
               wireframe={showWireframe || effectiveRenderMode === 'wireframe'}
             />
           </mesh>
@@ -578,7 +685,10 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
           size={0.75}
           space="local"
           onChange={handleTransformChange}
-          onMouseDown={() => onGizmoDragging?.(true)}
+          onMouseDown={() => {
+            isTransformDraggingRef.current = true;
+            onGizmoDragging?.(true);
+          }}
           onMouseUp={handleGizmoRelease}
         />
       )}

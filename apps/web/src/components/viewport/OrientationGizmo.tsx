@@ -31,8 +31,8 @@ export const OrientationGizmo: React.FC<OrientationGizmoProps> = ({
         />
       ) : (
         <GizmoViewport
-          axisColors={['#ef4444', '#38bdf8', '#22c55e']}
-          labels={['X', 'Z', 'Y']}
+          axisColors={['#ef4444', '#22c55e', '#38bdf8']}
+          labels={['X', 'Y', 'Z']}
           labelColor="#ffffff"
           axisHeadScale={1}
         />

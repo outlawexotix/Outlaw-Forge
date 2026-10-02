@@ -8,7 +8,7 @@ from fastapi import HTTPException, status
 from app.core.config import settings
 
 ALLOWED_EXTENSIONS: Set[str] = {"stl", "obj", "glb", "gltf", "3mf"}
-MAX_FILE_SIZE_BYTES: int = 100 * 1024 * 1024  # 100 MB
+MAX_FILE_SIZE_BYTES: int = settings.MAX_UPLOAD_SIZE_BYTES
 
 
 class StorageService:
@@ -82,7 +82,7 @@ class StorageService:
 
     @staticmethod
     def validate_file_size(size_bytes: int, max_size: int = MAX_FILE_SIZE_BYTES) -> None:
-        """Enforce maximum file upload size (100MB)."""
+        """Enforce the configured maximum file upload size."""
         if size_bytes > max_size:
             max_mb = max_size / (1024 * 1024)
             raise HTTPException(

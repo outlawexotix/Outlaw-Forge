@@ -43,9 +43,12 @@ class TestStorageService:
         # 10MB is valid
         temp_storage.validate_file_size(10 * 1024 * 1024)
 
-        # 101MB raises 413
+        # Files up to the configured 500MB limit are valid.
+        temp_storage.validate_file_size(500 * 1024 * 1024)
+
+        # Files above the configured limit raise 413.
         with pytest.raises(HTTPException) as exc:
-            temp_storage.validate_file_size(101 * 1024 * 1024)
+            temp_storage.validate_file_size(501 * 1024 * 1024)
         assert exc.value.status_code == 413
 
     def test_save_original_and_resolve(self, temp_storage: StorageService):

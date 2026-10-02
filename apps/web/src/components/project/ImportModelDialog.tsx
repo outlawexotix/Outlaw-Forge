@@ -13,6 +13,8 @@ interface ImportModelDialogProps {
 }
 
 const SUPPORTED_EXTENSIONS = [".stl", ".obj", ".glb", ".gltf"];
+const MAX_IMPORT_FILE_SIZE_MB = 500;
+const MAX_IMPORT_FILE_SIZE_BYTES = MAX_IMPORT_FILE_SIZE_MB * 1024 * 1024;
 
 export function ImportModelDialog({
   isOpen,
@@ -35,8 +37,8 @@ export function ImportModelDialog({
       setError(`Unsupported file format '${ext}'. Supported formats: STL, OBJ, GLB, GLTF`);
       return false;
     }
-    if (selectedFile.size > 100 * 1024 * 1024) {
-      setError("File exceeds maximum allowed size of 100MB.");
+    if (selectedFile.size > MAX_IMPORT_FILE_SIZE_BYTES) {
+      setError(`File exceeds maximum allowed size of ${MAX_IMPORT_FILE_SIZE_MB}MB.`);
       return false;
     }
     setError(null);
@@ -64,7 +66,14 @@ export function ImportModelDialog({
   };
 
   const handleUpload = async () => {
-    if (!file || !projectId) return;
+    if (!file) {
+      setError("Choose a 3D model file before importing.");
+      return;
+    }
+    if (!projectId) {
+      setError("Select or create a project before importing this model.");
+      return;
+    }
     setIsUploading(true);
     setError(null);
 
@@ -157,7 +166,7 @@ export function ImportModelDialog({
                   Drag & Drop 3D mesh or click to browse
                 </p>
                 <p className="text-xs text-slate-400">
-                  Supports binary/ASCII STL, Wavefront OBJ, GLB, and GLTF (Max 100MB)
+                  Supports binary/ASCII STL, Wavefront OBJ, GLB, and GLTF (Max {MAX_IMPORT_FILE_SIZE_MB}MB)
                 </p>
               </div>
             )}
@@ -181,7 +190,7 @@ export function ImportModelDialog({
           </button>
           <button
             onClick={handleUpload}
-            disabled={!file || isUploading || success}
+            disabled={!file || !projectId || isUploading || success}
             className="px-5 py-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono font-bold text-xs rounded transition flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-cyan-950/50"
           >
             {isUploading ? (
@@ -192,7 +201,7 @@ export function ImportModelDialog({
             ) : (
               <>
                 <FileUp className="w-3.5 h-3.5" />
-                <span>Import to Project</span>
+                <span>{projectId ? "Import to Project" : "Select Project First"}</span>
               </>
             )}
           </button>

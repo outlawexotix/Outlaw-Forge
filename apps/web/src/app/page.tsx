@@ -216,7 +216,7 @@ export default function WorkbenchPage() {
       setSaveStatus("saved");
     } catch (err) {
       console.error("Project creation failed:", err);
-      alert("Failed to create project");
+      throw err;
     } finally {
       setIsCreatingProject(false);
     }
@@ -311,6 +311,62 @@ export default function WorkbenchPage() {
       };
     });
     setSaveStatus("saved");
+  };
+
+  const handleModelDeleted = (modelId: string) => {
+    setActiveProject((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        working_models: prev.working_models.filter((model) => model.id !== modelId),
+      };
+    });
+    setSelectedModelId((current) => (current === modelId ? null : current));
+    setActiveModelBuffer(null);
+    setSaveStatus("saved");
+  };
+
+  const handleViewportDuplicate = async (modelId: string) => {
+    if (!activeProject) return;
+    try {
+      const duplicate = await apiClient.duplicateModel(activeProject.id, modelId);
+      setActiveProject((prev) => prev ? {
+        ...prev,
+        working_models: [...prev.working_models, duplicate],
+      } : prev);
+      setSelectedModelId(duplicate.id);
+      setSaveStatus("saved");
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Could not duplicate model.");
+    }
+  };
+
+  const handleViewportDelete = async (modelId: string) => {
+    if (!activeProject || !confirm("Delete this model from the build plate?")) return;
+    try {
+      await apiClient.deleteModel(activeProject.id, modelId);
+      handleModelDeleted(modelId);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Could not delete model.");
+    }
+  };
+
+  const handleViewportMirror = (modelId: string, axis: "X" | "Y" | "Z") => {
+    const axisIndex = { X: 0, Y: 1, Z: 2 }[axis];
+    setActiveProject((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        working_models: prev.working_models.map((m) => {
+          if (m.id !== modelId) return m;
+          const scale = [...m.transform.scale_factors] as [number, number, number];
+          scale[axisIndex] *= -1;
+          return { ...m, transform: { ...m.transform, scale_factors: scale } };
+        }),
+      };
+    });
+    setSelectedModelId(modelId);
+    setSaveStatus("unsaved");
   };
 
   // Handle Model Sliced into Top and Bottom Parts
@@ -424,7 +480,13 @@ export default function WorkbenchPage() {
         onNewProject={() => setIsCreateDialogOpen(true)}
         onOpenProjectList={() => setIsListDialogOpen(true)}
         onSaveProject={handleSaveActiveProject}
-        onImportClick={() => setIsImportDialogOpen(true)}
+        onImportClick={() => {
+          if (activeProject) {
+            setIsImportDialogOpen(true);
+          } else {
+            setIsListDialogOpen(true);
+          }
+        }}
         onOpenCalibration={() => setIsCalibrationDialogOpen(true)}
         onAutoArrange={handleAutoArrange}
       />
@@ -455,6 +517,10 @@ export default function WorkbenchPage() {
             slicePlaneOrigin={slicePlaneOrigin}
             slicePlaneNormal={slicePlaneNormal}
             onSelectModel={(id) => setSelectedModelId(id)}
+            onSetTool={setActiveTool}
+            onDuplicateModel={handleViewportDuplicate}
+            onDeleteModel={handleViewportDelete}
+            onMirrorModel={handleViewportMirror}
             onTransformChange={handleViewportTransformChange}
             onCursorCoordinates={(coords: { x: number; y: number; z: number }) => setCursorCoords(coords)}
             className="w-full h-full"
@@ -475,6 +541,7 @@ export default function WorkbenchPage() {
           onPrinterChange={handlePrinterChange}
           onOpenCreatePrinter={() => setIsCreatePrinterDialogOpen(true)}
           onModelUpdated={handleModelUpdated}
+          onModelDeleted={handleModelDeleted}
           onModelSliced={handleModelSliced}
           onSlicePlaneChange={handleSlicePlaneChange}
           onOperationRecorded={handleRefreshOperations}

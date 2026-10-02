@@ -77,6 +77,7 @@ interface InspectorProps {
   onPrinterChange?: (printer: PrinterProfile) => void;
   onOpenCreatePrinter?: () => void;
   onModelUpdated?: (model: WorkingModel) => void;
+  onModelDeleted?: (modelId: string) => void;
   onModelSliced?: (result: SliceModelResult) => void;
   onSlicePlaneChange?: (origin: [number, number, number], normal: [number, number, number]) => void;
   onOperationRecorded?: () => void;
@@ -99,6 +100,7 @@ export function Inspector({
   onPrinterChange,
   onOpenCreatePrinter,
   onModelUpdated,
+  onModelDeleted,
   onModelSliced,
   onSlicePlaneChange,
   onOperationRecorded,
@@ -692,6 +694,7 @@ export function Inspector({
     if (!confirm(`Are you sure you want to remove '${mesh.filename}'?`)) return;
     try {
       await apiClient.deleteModel(projectId, mesh.id);
+      onModelDeleted?.(mesh.id);
       if (onProjectRefreshed) onProjectRefreshed();
     } catch (err: any) {
       alert(`Delete failed: ${err.message}`);

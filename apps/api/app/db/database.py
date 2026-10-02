@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -5,6 +6,18 @@ from typing import AsyncGenerator, Optional
 import aiosqlite
 
 from app.core.config import settings
+
+
+_REQUIRED_TABLES = frozenset(
+    {
+        "projects",
+        "source_files",
+        "working_models",
+        "printer_profiles",
+        "operations",
+    }
+)
+_initialization_lock = asyncio.Lock()
 
 
 def get_db_path(custom_path: Optional[str] = None) -> Path:
@@ -26,10 +39,35 @@ def get_db_path(custom_path: Optional[str] = None) -> Path:
 async def get_db(custom_path: Optional[str] = None) -> AsyncGenerator[aiosqlite.Connection, None]:
     """Yield an async SQLite connection configured with Row factory and foreign keys enabled."""
     db_file = get_db_path(custom_path)
+    # Do not rely solely on the ASGI lifespan: some servers, probes, and tests can
+    # call dependencies without running lifespan startup hooks first.
+    await ensure_db_initialized(db_file)
     async with aiosqlite.connect(str(db_file)) as conn:
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA foreign_keys = ON;")
         yield conn
+
+
+async def ensure_db_initialized(custom_path: Optional[str] = None) -> None:
+    """Ensure the application schema exists before a database connection is used.
+
+    The schema remains owned by ``init_db``.  The guarded existence check makes
+    the first database dependency call self-healing when startup hooks were
+    skipped or a database file was replaced.
+    """
+    db_file = get_db_path(custom_path)
+    async with _initialization_lock:
+        async with aiosqlite.connect(str(db_file)) as conn:
+            cursor = await conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name IN "
+                "('projects', 'source_files', 'working_models', "
+                "'printer_profiles', 'operations')"
+            )
+            existing_tables = {row[0] for row in await cursor.fetchall()}
+
+        if not _REQUIRED_TABLES.issubset(existing_tables):
+            await init_db(str(db_file))
 
 
 async def init_db(custom_path: Optional[str] = None) -> None:

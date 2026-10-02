@@ -1454,5 +1454,3 @@ async def export_project_3mf(
         models_exported=len(models_data),
         message="Successfully generated 3MF production archive for OrcaSlicer & Bambu Studio",
     )
-
-

@@ -7,9 +7,12 @@ import { OrbitControls, PerspectiveCamera, OrthographicCamera } from '@react-thr
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import { BuildPlate } from './BuildPlate';
+import { AxisTriad } from './AxisTriad';
 import { SceneLights } from './SceneLights';
 import { OrientationGizmo } from './OrientationGizmo';
-import { ModelRenderer, RenderMode } from './ModelRenderer';
+import { ToolpathRenderer } from './ToolpathRenderer';
+import { ModelRenderer, RenderMode, CADTool } from './ModelRenderer';
+import { ModelContextAction, ModelContextMenu } from './ModelContextMenu';
 import { CuttingPlane } from './CuttingPlane';
 import { PrinterProfile, WorkingModel } from '@shared/types/api';
 import { PresetView, ViewportSettings } from '@shared/types/viewport';
@@ -18,6 +21,7 @@ import {
   MeshMetrics,
   calculatePresetCameraView,
   PlateTextureType,
+  threeToSlicerVector,
 } from '@three-tools';
 import {
   Box,
@@ -66,7 +70,7 @@ export interface ViewportContainerProps {
   activeModelId?: string | null;
   modelBuffer?: ArrayBuffer | null;
   modelUrl?: string | null;
-  activeTool?: 'select' | 'move' | 'rotate' | 'scale' | 'slice' | 'inspect' | 'lay_flat';
+  activeTool?: CADTool;
   slicePlaneOrigin?: [number, number, number];
   slicePlaneNormal?: [number, number, number];
   className?: string;
@@ -75,6 +79,10 @@ export interface ViewportContainerProps {
   onTransformChange?: (transform: { position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] }) => void;
   onDropFile?: (file: File) => void;
   onSelectModel?: (modelId: string) => void;
+  onSetTool?: (tool: CADTool) => void;
+  onDuplicateModel?: (modelId: string) => void | Promise<void>;
+  onDeleteModel?: (modelId: string) => void | Promise<void>;
+  onMirrorModel?: (modelId: string, axis: 'X' | 'Y' | 'Z') => void | Promise<void>;
 }
 
 /**
@@ -92,10 +100,11 @@ const BedRaycaster: React.FC<{
       onPointerMove={(e) => {
         e.stopPropagation();
         if (e.point) {
+          const point = threeToSlicerVector(e.point);
           onHover({
-            x: Math.round(e.point.x * 10) / 10,
-            y: Math.round(e.point.y * 10) / 10,
-            z: Math.round(e.point.z * 10) / 10,
+            x: Math.round(point.x * 10) / 10,
+            y: Math.round(point.y * 10) / 10,
+            z: Math.round(point.z * 10) / 10,
           });
         }
       }}
@@ -122,6 +131,10 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   onTransformChange,
   onDropFile,
   onSelectModel,
+  onSetTool,
+  onDuplicateModel,
+  onDeleteModel,
+  onMirrorModel,
 }) => {
   const [settings, setSettings] = useState<ViewportSettings>(DEFAULT_SETTINGS);
   const [activeView, setActiveView] = useState<PresetView>('isometric');
@@ -134,9 +147,34 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isGizmoDragging, setIsGizmoDragging] = useState<boolean>(false);
   const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
+  const [gcodeText, setGcodeText] = useState<string | null>(null);
+  const [showToolpaths, setShowToolpaths] = useState<boolean>(true);
+  const [contextMenu, setContextMenu] = useState<{ modelId: string; x: number; y: number } | null>(null);
 
   const controlsRef = useRef<OrbitControlsImpl>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+
+  const openModelContextMenu = useCallback((modelId: string, clientX: number, clientY: number) => {
+    const rect = canvasContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // Keep the full action list inside the viewport even when the model is
+    // close to the right or bottom edge of the canvas.
+    const x = Math.max(8, Math.min(clientX - rect.left, rect.width - 220));
+    const y = Math.max(8, Math.min(clientY - rect.top, rect.height - 390));
+    setContextMenu({ modelId, x, y });
+  }, []);
+
+  const handleContextAction = useCallback((action: ModelContextAction) => {
+    const selectedId = contextMenu?.modelId;
+    if (!selectedId) return;
+    setContextMenu(null);
+    if (action === 'duplicate') return void onDuplicateModel?.(selectedId);
+    if (action === 'delete') return void onDeleteModel?.(selectedId);
+    if (action.startsWith('mirror_')) {
+      return void onMirrorModel?.(selectedId, action.slice(-1).toUpperCase() as 'X' | 'Y' | 'Z');
+    }
+    onSetTool?.(action as CADTool);
+  }, [contextMenu, onDeleteModel, onDuplicateModel, onMirrorModel, onSetTool]);
 
   const bedWidth = printer.build_width_mm || 256;
   const bedDepth = printer.build_depth_mm || 256;
@@ -173,10 +211,12 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const droppedFile = e.dataTransfer.files[0];
       const ext = droppedFile.name.split('.').pop()?.toLowerCase();
-      if (['stl', 'obj', 'glb', 'gltf', '3mf'].includes(ext || '')) {
+      if (['gcode', 'gco'].includes(ext || '')) {
+        droppedFile.text().then(setGcodeText).catch(() => setErrorMessage('Could not read the G-code file.'));
+      } else if (['stl', 'obj', 'glb', 'gltf', '3mf'].includes(ext || '')) {
         onDropFile?.(droppedFile);
       } else {
-        setErrorMessage(`Unsupported file format '.${ext}'. Drop STL, OBJ, or GLB files.`);
+        setErrorMessage(`Unsupported file format '.${ext}'. Drop STL, OBJ, GLB, or G-code files.`);
       }
     }
   };
@@ -276,6 +316,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onContextMenu={(event) => event.preventDefault()}
       className={`relative w-full h-full min-h-[500px] overflow-hidden bg-[#090d16] select-none ${className}`}
     >
       {/* 3D Canvas Scene */}
@@ -324,6 +365,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
 
         {/* Slicer Space Root Group: Rotation -90 deg (-PI/2) on X-axis maps Z-up to Three.js Y-up */}
         <group rotation={[-Math.PI / 2, 0, 0]} name="SlicerSpaceRoot">
+          <AxisTriad size={32} visible={settings.showOrigin} />
           {/* OrcaSlicer Build Plate Surface & Procedural PEI Texture */}
           <BuildPlate
             printer={printer}
@@ -355,6 +397,8 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
                   color={isSelected ? '#38bdf8' : '#64748b'}
                   onModelLoaded={isSelected ? handleModelLoaded : undefined}
                   onTransformChange={isSelected ? onTransformChange : undefined}
+                  onSelect={() => onSelectModel?.(m.id)}
+                  onContextMenu={(x, y) => openModelContextMenu(m.id, x, y)}
                   onGizmoDragging={(dragging) => isSelected && setIsGizmoDragging(dragging)}
                   onError={handleModelError}
                 />
@@ -376,6 +420,8 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
               isSelected={true}
               onModelLoaded={handleModelLoaded}
               onTransformChange={onTransformChange}
+              onSelect={() => model?.id && onSelectModel?.(model.id)}
+              onContextMenu={(x, y) => model?.id && openModelContextMenu(model.id, x, y)}
               onGizmoDragging={(dragging) => setIsGizmoDragging(dragging)}
               onError={handleModelError}
             />
@@ -400,11 +446,21 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
               onHover={onCursorCoordinates}
             />
           )}
+          {gcodeText && <ToolpathRenderer source={gcodeText} bedWidth={bedWidth} bedDepth={bedDepth} visible={showToolpaths} />}
         </group>
 
         {/* OrcaSlicer Orientation Gizmo / View Cube */}
         <OrientationGizmo alignment="top-right" margin={[70, 70]} />
       </Canvas>
+
+      {contextMenu && (
+        <ModelContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onAction={handleContextAction}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
 
       {/* Direct Drag-and-Drop Active Overlay */}
       {isDraggingFile && (
@@ -414,7 +470,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
             Drop 3D CAD Mesh onto Build Plate
           </div>
           <div className="text-xs font-mono text-cyan-200 mt-1">
-            Supports STL, OBJ, GLB, GLTF (Deterministic mm normalization)
+            Supports STL, OBJ, GLB, GLTF, G-code, and BG-code
           </div>
         </div>
       )}
@@ -583,6 +639,15 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
             >
               Overhangs
             </button>
+            {gcodeText && (
+              <button
+                onClick={() => setShowToolpaths((visible) => !visible)}
+                className={`px-2 py-0.5 rounded transition ${showToolpaths ? 'bg-amber-900/60 text-amber-300 font-semibold border border-amber-600/40' : 'hover:text-white text-slate-400'}`}
+                title="Toggle loaded G-code toolpaths"
+              >
+                G-code
+              </button>
+            )}
           </div>
         </div>
 
