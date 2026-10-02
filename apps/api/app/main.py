@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.api import api_router
-from app.api.v1.endpoints import calibration, health, models, printers, projects
+from app.api.v1.endpoints import calibration, health, models, printers, projects, studios
 from app.core.config import settings
 from app.db.database import init_db
 
@@ -39,6 +39,7 @@ app.include_router(projects.router, prefix="/projects", tags=["projects"])
 app.include_router(printers.router, prefix="/printers", tags=["printers"])
 app.include_router(models.router, tags=["models"])
 app.include_router(calibration.router, tags=["calibration", "advanced_cad"])
+app.include_router(studios.router, tags=["studios", "masksmith", "figureforge"])
 
 # Versioned API routes (/api/v1)
 app.include_router(api_router, prefix=settings.API_V1_STR)

@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import aiosqlite
 
+_UNSET = object()
+
 from app.models.project import (
     MeshBounds,
     MeshTransform,
@@ -428,7 +430,7 @@ class ProjectRepository:
         triangle_count: Optional[int] = None,
         vertex_count: Optional[int] = None,
         surface_area_cm2: Optional[float] = None,
-        volume_cm3: Optional[float] = None,
+        volume_cm3: Any = _UNSET,
         is_watertight: Optional[bool] = None,
         transform: Optional[MeshTransform] = None,
     ) -> Optional[WorkingModel]:
@@ -452,7 +454,7 @@ class ProjectRepository:
             updates["vertex_count"] = vertex_count
         if surface_area_cm2 is not None:
             updates["surface_area_cm2"] = surface_area_cm2
-        if volume_cm3 is not None:
+        if volume_cm3 is not _UNSET:
             updates["volume_cm3"] = volume_cm3
         if is_watertight is not None:
             updates["is_watertight"] = 1 if is_watertight else 0
@@ -533,5 +535,4 @@ class ProjectRepository:
         )
         await self.conn.commit()
         return cursor.rowcount > 0
-
 

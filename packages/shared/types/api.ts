@@ -103,7 +103,12 @@ export type OperationType =
   | 'DUPLICATE'
   | 'DELETE'
   | 'ARRANGE'
-  | 'EXPORT_3MF';
+  | 'EXPORT_3MF'
+  | 'MASK_FIT_SCALE'
+  | 'MASK_MAGNET_PUNCH'
+  | 'MASK_STRAP_SLOT'
+  | 'FIGURE_PLINTH_GENERATE'
+  | 'FIGURE_KEY_PEG';
 
 export interface OperationRecord {
   id: string;
@@ -484,6 +489,160 @@ export interface ExportProject3MFResponse {
   printer_model?: string;
   message: string;
 }
+
+// --- MaskSmith Studio Types ---
+
+export type HeadSizePreset =
+  | 'Adult Male (L/XL - 155mm)'
+  | 'Adult Male (M - 150mm)'
+  | 'Adult Female (M - 145mm)'
+  | 'Adult Female (S - 140mm)'
+  | 'Youth (130mm)'
+  | 'Child (120mm)'
+  | 'Custom';
+
+export type MagnetPreset =
+  | '6x3mm (D:6mm, H:3mm)'
+  | '8x3mm (D:8mm, H:3mm)'
+  | '10x3mm (D:10mm, H:3mm)'
+  | '12x3mm (D:12mm, H:3mm)'
+  | '6x2mm (D:6mm, H:2mm)'
+  | '8x2mm (D:8mm, H:2mm)'
+  | '10x2mm (D:10mm, H:2mm)'
+  | 'Custom';
+
+export type MagnetPlacementMode =
+  | 'perimeter_4_corner'
+  | 'perimeter_6_point'
+  | 'split_seam_flange'
+  | 'custom_points';
+
+export type StrapPreset =
+  | '15mm Elastic Band'
+  | '20mm (3/4in) Webbing'
+  | '25mm (1in) Tactical Webbing'
+  | '38mm (1.5in) Heavy Duty Webbing'
+  | 'Custom';
+
+export interface MaskFitAnalysis {
+  model_id: string;
+  inner_width_mm: number;
+  inner_height_mm: number;
+  inner_depth_mm: number;
+  recommended_preset: HeadSizePreset;
+  recommended_scale_male_pct: number;
+  recommended_scale_female_pct: number;
+  recommended_scale_youth_pct: number;
+  head_clearance_padding_mm: number;
+  is_wearable_scale: boolean;
+  notes: string;
+}
+
+export interface MaskFitScalePayload {
+  target_preset?: HeadSizePreset;
+  target_inner_width_mm?: number;
+  padding_clearance_mm?: number;
+  uniform_scale?: boolean;
+}
+
+export interface MagnetSocketPunchPayload {
+  magnet_preset?: MagnetPreset;
+  custom_diameter_mm?: number;
+  custom_depth_mm?: number;
+  clearance_tolerance_mm?: number;
+  placement_mode?: MagnetPlacementMode;
+  margin_inset_mm?: number;
+  custom_points?: [number, number, number][];
+}
+
+export interface MagnetSocketPunchResult {
+  model: WorkingModel;
+  sockets_punched: number;
+  magnet_diameter_mm: number;
+  magnet_depth_mm: number;
+  socket_positions: [number, number, number][];
+  message: string;
+}
+
+export interface StrapSlotPunchPayload {
+  strap_preset?: StrapPreset;
+  slot_width_mm?: number;
+  slot_thickness_mm?: number;
+  placement?: 'temple_bilateral' | 'crown_and_temple_3point' | 'custom';
+  inset_from_edge_mm?: number;
+  custom_positions?: [number, number, number][];
+}
+
+export interface StrapSlotPunchResult {
+  model: WorkingModel;
+  slots_punched: number;
+  slot_width_mm: number;
+  slot_thickness_mm: number;
+  slot_positions: [number, number, number][];
+  message: string;
+}
+
+// --- FigureForge Studio Types ---
+
+export type PlinthShape =
+  | 'cylinder'
+  | 'hexagon'
+  | 'octagon'
+  | 'stepped_round'
+  | 'square_chamfered';
+
+export interface CenterOfMassAnalysis {
+  model_id: string;
+  center_of_mass: [number, number, number];
+  ground_projection: [number, number, number];
+  base_centroid: [number, number, number];
+  com_offset_from_center_mm: number;
+  base_contact_radius_mm: number;
+  tipping_angle_deg: number;
+  stability_status: 'STABLE' | 'MARGINAL' | 'TOPPLE_RISK';
+  is_freestanding: boolean;
+  recommended_plinth_diameter_mm: number;
+  notes: string;
+}
+
+export interface PlinthGeneratePayload {
+  shape?: PlinthShape;
+  diameter_mm?: number;
+  height_mm?: number;
+  chamfer_height_mm?: number;
+  add_nameplate_recess?: boolean;
+  add_figure_sockets?: boolean;
+  socket_diameter_mm?: number;
+  socket_depth_mm?: number;
+  socket_spacing_mm?: number;
+}
+
+export interface PlinthGenerateResult {
+  plinth_model: WorkingModel;
+  shape: PlinthShape;
+  diameter_mm: number;
+  height_mm: number;
+  has_sockets: boolean;
+  message: string;
+}
+
+export interface KeyPegPayload {
+  peg_shape?: 'cylinder' | 'square' | 'keyed_dowel';
+  peg_diameter_mm?: number;
+  peg_length_mm?: number;
+  foot_offset_mm?: number;
+  dual_feet_pegs?: boolean;
+}
+
+export interface KeyPegResult {
+  model_with_pegs: WorkingModel;
+  pegs_added_count: number;
+  peg_diameter_mm: number;
+  peg_length_mm: number;
+  peg_positions: [number, number, number][];
+  message: string;
+}
+
 
 
 

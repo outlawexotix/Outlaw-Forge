@@ -96,7 +96,7 @@ async def generate_calibration_artifact(
         filename=sanitized_name,
         file_format="stl",
         file_size_bytes=file_size,
-        storage_path=str(orig_path),
+        storage_path=orig_rel_path,
     )
 
     working_model = await project_repo.add_working_model(
@@ -104,7 +104,7 @@ async def generate_calibration_artifact(
         source_file_id=source_file.id,
         filename=sanitized_name,
         file_format="stl",
-        storage_path=str(working_path),
+        storage_path=working_rel_path,
         bounds=analysis.bounds,
         triangle_count=analysis.triangle_count,
         vertex_count=analysis.vertex_count,
@@ -186,7 +186,7 @@ async def auto_orient_model(
 
     updated_model = await project_repo.update_working_model(
         model_id=model_id,
-        storage_path=str(working_path),
+        storage_path=working_rel_path,
         bounds=analysis.bounds,
         triangle_count=analysis.triangle_count,
         vertex_count=analysis.vertex_count,
@@ -261,9 +261,12 @@ async def auto_arrange_models(
             bed_w = printer.build_width_mm
             bed_d = printer.build_depth_mm
 
-    # Load all meshes
+    # Load either the requested subset or all meshes.
+    selected_ids = set(payload.model_ids) if payload.model_ids else None
     models_data = []
     for wm in project.working_models:
+        if selected_ids is not None and wm.id not in selected_ids:
+            continue
         try:
             resolved_path = storage_service.resolve_path(wm.storage_path)
             m = mesh_service.load_mesh(resolved_path)
@@ -290,7 +293,7 @@ async def auto_arrange_models(
 
         updated_wm = await project_repo.update_working_model(
             model_id=wm.id,
-            storage_path=str(working_path),
+            storage_path=working_rel_path,
             bounds=analysis.bounds,
             triangle_count=analysis.triangle_count,
             vertex_count=analysis.vertex_count,
@@ -364,7 +367,7 @@ async def generate_mouse_ears(
     analysis = mesh_service.analyze_mesh(modified_mesh)
     updated_model = await project_repo.update_working_model(
         model_id=model_id,
-        storage_path=str(working_path),
+            storage_path=working_rel_path,
         bounds=analysis.bounds,
         triangle_count=analysis.triangle_count,
         vertex_count=analysis.vertex_count,

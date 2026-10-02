@@ -20,7 +20,18 @@ import {
   ArrangeProjectPayload,
   ArrangeProjectResult,
   ExportProject3MFPayload,
-  ExportProject3MFResponse
+  ExportProject3MFResponse,
+  MaskFitAnalysis,
+  MaskFitScalePayload,
+  MagnetSocketPunchPayload,
+  MagnetSocketPunchResult,
+  StrapSlotPunchPayload,
+  StrapSlotPunchResult,
+  CenterOfMassAnalysis,
+  PlinthGeneratePayload,
+  PlinthGenerateResult,
+  KeyPegPayload,
+  KeyPegResult
 } from "@shared/types/api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -478,6 +489,115 @@ export class ApiClient {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || "Failed to estimate cost");
+    }
+    return res.json();
+  }
+  /**
+   * MaskSmith: Analyze wearable mask fit and anthropometric clearance
+   */
+  async analyzeMaskFit(projectId: string, modelId: string): Promise<MaskFitAnalysis> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/masksmith/fit-analyze`, {
+      method: "POST",
+      headers: { "Accept": "application/json" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to analyze mask fit");
+    }
+    return res.json();
+  }
+
+  /**
+   * MaskSmith: Auto-scale mask to match targeted human head preset
+   */
+  async autoScaleMask(projectId: string, modelId: string, payload: MaskFitScalePayload): Promise<WorkingModel> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/masksmith/auto-scale`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to scale mask fit");
+    }
+    return res.json();
+  }
+
+  /**
+   * MaskSmith: Punch neodymium magnet sockets into mask perimeter
+   */
+  async punchMagnetSockets(projectId: string, modelId: string, payload: MagnetSocketPunchPayload): Promise<MagnetSocketPunchResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/masksmith/punch-magnets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to punch magnet sockets");
+    }
+    return res.json();
+  }
+
+  /**
+   * MaskSmith: Punch strap webbing slots and harness loops
+   */
+  async punchStrapSlots(projectId: string, modelId: string, payload: StrapSlotPunchPayload): Promise<StrapSlotPunchResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/masksmith/punch-strap-slots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to punch strap slots");
+    }
+    return res.json();
+  }
+
+  /**
+   * FigureForge: Calculate center of mass and tipping angle stability
+   */
+  async analyzeFigureCOM(projectId: string, modelId: string): Promise<CenterOfMassAnalysis> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/figureforge/com-analyze`, {
+      method: "POST",
+      headers: { "Accept": "application/json" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to analyze figure center of mass");
+    }
+    return res.json();
+  }
+
+  /**
+   * FigureForge: Generate custom collectible display plinth
+   */
+  async generatePlinth(projectId: string, modelId: string, payload: PlinthGeneratePayload): Promise<PlinthGenerateResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/figureforge/generate-plinth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to generate plinth");
+    }
+    return res.json();
+  }
+
+  /**
+   * FigureForge: Create mounting key-pegs on figure feet
+   */
+  async createKeyPegs(projectId: string, modelId: string, payload: KeyPegPayload): Promise<KeyPegResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/figureforge/create-key-pegs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to create key pegs");
     }
     return res.json();
   }

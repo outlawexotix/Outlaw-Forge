@@ -33,6 +33,11 @@ OperationType = Literal[
     "DELETE",
     "ARRANGE",
     "EXPORT_3MF",
+    "MASK_FIT_SCALE",
+    "MASK_MAGNET_PUNCH",
+    "MASK_STRAP_SLOT",
+    "FIGURE_PLINTH_GENERATE",
+    "FIGURE_KEY_PEG",
 ]
 
 

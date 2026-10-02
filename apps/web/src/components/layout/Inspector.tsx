@@ -57,8 +57,12 @@ import {
   Copy,
   Trash2,
   Box,
-  Package
+  Package,
+  Shield,
+  Award
 } from "lucide-react";
+import { MaskSmithStudio } from "../studios/MaskSmithStudio";
+import { FigureForgeStudio } from "../studios/FigureForgeStudio";
 
 interface InspectorProps {
   projectId: string;
@@ -80,7 +84,7 @@ interface InspectorProps {
   onAutoArrange?: () => void;
 }
 
-type TabType = "dimensions" | "transform" | "orca" | "slice" | "repair" | "printability" | "export" | "history";
+type TabType = "dimensions" | "transform" | "mask" | "figure" | "orca" | "slice" | "repair" | "printability" | "export" | "history";
 
 export function Inspector({
   projectId,
@@ -735,7 +739,7 @@ export function Inspector({
       )}
 
       {/* Panel Tab Navigation */}
-      <div className="h-10 border-b border-slate-800/80 flex items-center bg-slate-900/60 shrink-0 px-1">
+      <div className="h-10 border-b border-slate-800/80 flex items-center bg-slate-900/60 shrink-0 px-1 overflow-x-auto">
         <button
           onClick={() => setActiveTab("dimensions")}
           className={`flex-1 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 ${
@@ -750,7 +754,7 @@ export function Inspector({
 
         <button
           onClick={() => setActiveTab("transform")}
-          className={`flex-1 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 ${
+          className={`px-2.5 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 shrink-0 ${
             activeTab === "transform"
               ? "border-cyan-400 text-cyan-300 bg-cyan-950/20"
               : "border-transparent text-slate-400 hover:text-slate-200"
@@ -761,8 +765,34 @@ export function Inspector({
         </button>
 
         <button
+          onClick={() => setActiveTab("mask")}
+          className={`px-2.5 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 shrink-0 ${
+            activeTab === "mask"
+              ? "border-amber-400 text-amber-300 bg-amber-950/20"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+          title="MaskSmith Studio (Wearable Sizing, Magnet Pockets, Strap Webbing Slots)"
+        >
+          <Shield className="w-3 h-3 text-amber-400" />
+          <span>Mask</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("figure")}
+          className={`px-2.5 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 shrink-0 ${
+            activeTab === "figure"
+              ? "border-emerald-400 text-emerald-300 bg-emerald-950/20"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+          title="FigureForge Studio (Display Plinth Generator, COM Stability, Key-Pegs)"
+        >
+          <Award className="w-3 h-3 text-emerald-400" />
+          <span>Figure</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab("orca")}
-          className={`flex-1 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 ${
+          className={`px-2.5 py-2 text-[10px] font-mono font-bold tracking-wider uppercase transition border-b-2 flex items-center justify-center space-x-1 shrink-0 ${
             activeTab === "orca"
               ? "border-cyan-400 text-cyan-300 bg-cyan-950/20"
               : "border-transparent text-slate-400 hover:text-slate-200"
@@ -1257,6 +1287,27 @@ export function Inspector({
               </button>
             </div>
           </div>
+        )}
+
+        {/* TAB: MASKSMITH STUDIO */}
+        {activeTab === "mask" && (
+          <MaskSmithStudio
+            projectId={projectId}
+            mesh={mesh}
+            onModelUpdated={onModelUpdated}
+            onOperationRecorded={onOperationRecorded}
+          />
+        )}
+
+        {/* TAB: FIGUREFORGE STUDIO */}
+        {activeTab === "figure" && (
+          <FigureForgeStudio
+            projectId={projectId}
+            mesh={mesh}
+            onModelUpdated={onModelUpdated}
+            onProjectRefreshed={onProjectRefreshed}
+            onOperationRecorded={onOperationRecorded}
+          />
         )}
 
         {/* TAB: ORCASLICER STUDIO (MOUSE-EARS, ADAPTIVE LAYERS, FILAMENT COST) */}
