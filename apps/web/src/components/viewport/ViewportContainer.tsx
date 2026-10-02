@@ -10,7 +10,8 @@ import { BuildPlate } from './BuildPlate';
 import { AxisTriad } from './AxisTriad';
 import { SceneLights } from './SceneLights';
 import { OrientationGizmo } from './OrientationGizmo';
-import { ToolpathRenderer } from './ToolpathRenderer';
+import { ToolpathRenderer, ParsedGCodeData } from './ToolpathRenderer';
+import { ToolpathController } from './ToolpathController';
 import { ModelRenderer, RenderMode, CADTool } from './ModelRenderer';
 import { ModelContextAction, ModelContextMenu } from './ModelContextMenu';
 import { CuttingPlane } from './CuttingPlane';
@@ -148,6 +149,14 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   const [isGizmoDragging, setIsGizmoDragging] = useState<boolean>(false);
   const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
   const [gcodeText, setGcodeText] = useState<string | null>(null);
+  const [parsedGCode, setParsedGCode] = useState<ParsedGCodeData | null>(null);
+  const [toolpathLayer, setToolpathLayer] = useState<number>(0);
+  const [showSingleLayer, setShowSingleLayer] = useState<boolean>(false);
+  const [showTravelMoves, setShowTravelMoves] = useState<boolean>(true);
+  const [showOuterWall, setShowOuterWall] = useState<boolean>(true);
+  const [showInnerWall, setShowInnerWall] = useState<boolean>(true);
+  const [showInfill, setShowInfill] = useState<boolean>(true);
+  const [showSupport, setShowSupport] = useState<boolean>(true);
   const [showToolpaths, setShowToolpaths] = useState<boolean>(true);
   const [contextMenu, setContextMenu] = useState<{ modelId: string; x: number; y: number } | null>(null);
 
@@ -446,7 +455,25 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
               onHover={onCursorCoordinates}
             />
           )}
-          {gcodeText && <ToolpathRenderer source={gcodeText} bedWidth={bedWidth} bedDepth={bedDepth} visible={showToolpaths} />}
+          {gcodeText && (
+            <ToolpathRenderer
+              source={gcodeText}
+              bedWidth={bedWidth}
+              bedDepth={bedDepth}
+              visible={showToolpaths}
+              currentLayer={toolpathLayer}
+              showSingleLayer={showSingleLayer}
+              showTravel={showTravelMoves}
+              showOuterWall={showOuterWall}
+              showInnerWall={showInnerWall}
+              showInfill={showInfill}
+              showSupport={showSupport}
+              onGCodeParsed={(data) => {
+                setParsedGCode(data);
+                setToolpathLayer(data.totalLayers - 1);
+              }}
+            />
+          )}
         </group>
 
         {/* OrcaSlicer Orientation Gizmo / View Cube */}
@@ -459,6 +486,31 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
           y={contextMenu.y}
           onAction={handleContextAction}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* Interactive G-code Toolpath Simulation HUD */}
+      {gcodeText && showToolpaths && parsedGCode && (
+        <ToolpathController
+          data={parsedGCode}
+          currentLayer={toolpathLayer}
+          onLayerChange={setToolpathLayer}
+          showSingleLayer={showSingleLayer}
+          onToggleSingleLayer={setShowSingleLayer}
+          showTravel={showTravelMoves}
+          onToggleTravel={setShowTravelMoves}
+          showOuterWall={showOuterWall}
+          onToggleOuterWall={setShowOuterWall}
+          showInnerWall={showInnerWall}
+          onToggleInnerWall={setShowInnerWall}
+          showInfill={showInfill}
+          onToggleInfill={setShowInfill}
+          showSupport={showSupport}
+          onToggleSupport={setShowSupport}
+          onClose={() => {
+            setGcodeText(null);
+            setParsedGCode(null);
+          }}
         />
       )}
 
