@@ -284,4 +284,121 @@ class ExportProject3MFResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# --- Phase 8: Advanced Printability, Diagnostics & Cost Models ---
+
+
+class ThinRegionModel(BaseModel):
+    center_mm: List[float] = Field(description="[X, Y, Z] coordinate of thin spot in mm")
+    thickness_mm: float = Field(description="Detected local wall thickness in mm")
+    severity: Literal["warning", "critical"] = Field(description="Severity flag")
+    feature_id: int = Field(default=0)
+
+
+class ThinWallAnalysisPayload(BaseModel):
+    min_wall_thickness_mm: float = Field(
+        default=0.8, ge=0.1, le=10.0, description="Minimum allowable wall thickness in mm"
+    )
+    sample_points: int = Field(
+        default=500, ge=50, le=5000, description="Number of surface raycast probe samples"
+    )
+
+
+class ThinWallAnalysisResult(BaseModel):
+    model_id: str
+    thin_wall_count: int
+    min_detected_thickness_mm: float
+    thin_regions: List[ThinRegionModel]
+    total_thin_area_cm2: float
+    summary: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FloatingIslandModel(BaseModel):
+    point_mm: List[float] = Field(description="[X, Y, Z] position of unsupported point")
+    layer_z_mm: float = Field(description="Z height in mm")
+    area_mm2: float = Field(description="Estimated unsupported area in mm2")
+    severity: Literal["warning", "critical"] = Field(default="warning")
+
+
+class IslandAnalysisPayload(BaseModel):
+    min_island_area_mm2: float = Field(
+        default=0.5, ge=0.01, le=100.0, description="Minimum area threshold for island detection"
+    )
+    overhang_threshold_deg: float = Field(
+        default=65.0, ge=30.0, le=89.0, description="Critical overhang angle relative to vertical"
+    )
+
+
+class IslandAnalysisResult(BaseModel):
+    model_id: str
+    island_count: int
+    islands: List[FloatingIslandModel]
+    summary: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CostEstimationPayload(BaseModel):
+    material_type: Optional[str] = Field(
+        default="PLA", description="Filament or resin material type"
+    )
+    filament_id: Optional[str] = None
+    density_g_cm3: float = Field(
+        default=1.24, ge=0.5, le=5.0, description="Material density in g/cm3"
+    )
+    spool_price_usd: float = Field(
+        default=20.0, ge=1.0, le=500.0, description="Price per spool or bottle in USD"
+    )
+    spool_weight_g: float = Field(
+        default=1000.0, ge=100.0, le=10000.0, description="Spool net weight in grams"
+    )
+    infill_density_percent: float = Field(
+        default=15.0, ge=0.0, le=100.0, description="Infill percentage"
+    )
+    infill_percentage: Optional[float] = None
+    wall_thickness_mm: float = Field(
+        default=1.2, ge=0.4, le=10.0, description="Outer perimeter thickness in mm"
+    )
+    wall_count: Optional[int] = None
+    top_bottom_thickness_mm: float = Field(
+        default=1.0, ge=0.2, le=10.0, description="Top and bottom solid shell thickness in mm"
+    )
+    print_speed_mm_s: float = Field(
+        default=150.0, ge=10.0, le=1000.0, description="Print travel / extrusion speed in mm/s"
+    )
+    layer_height_mm: float = Field(
+        default=0.2, ge=0.05, le=1.0, description="Layer height in mm"
+    )
+
+    model_config = ConfigDict(extra="allow")
+
+    @property
+    def effective_infill_pct(self) -> float:
+        if self.infill_percentage is not None:
+            return float(self.infill_percentage)
+        return float(self.infill_density_percent)
+
+
+class CostEstimationResult(BaseModel):
+    model_id: str
+    model_volume_cm3: float
+    shell_volume_cm3: float
+    infill_volume_cm3: float
+    total_printed_volume_cm3: float
+    mass_grams: float
+    estimated_mass_grams: float = 0.0
+    filament_length_m: float
+    estimated_filament_length_m: float = 0.0
+    material_cost_usd: float
+    estimated_cost_usd: float = 0.0
+    estimated_time_minutes: float
+    estimated_print_time_min: float = 0.0
+    estimated_time_formatted: str
+    material_type: str
+
+    model_config = ConfigDict(from_attributes=True, extra="allow")
+
+
+
 

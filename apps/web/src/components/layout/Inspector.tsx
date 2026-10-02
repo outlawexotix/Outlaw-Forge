@@ -16,6 +16,9 @@ import {
   RepairModelResult,
   FilamentProfile,
   CostEstimationResult,
+  ThinWallAnalysisResult,
+  IslandAnalysisResult,
+  FilamentMaterial,
   AdaptiveLayerResult,
   MouseEarResult,
   AutoOrientResult,
@@ -156,6 +159,16 @@ export function Inspector({
   const [wallCount, setWallCount] = useState<number>(3);
   const [isEstimatingCost, setIsEstimatingCost] = useState(false);
   const [costResult, setCostResult] = useState<CostEstimationResult | null>(null);
+  const [filamentMaterial, setFilamentMaterial] = useState<FilamentMaterial>("PLA");
+  const [spoolPrice, setSpoolPrice] = useState<number>(20.0);
+  const [printSpeed, setPrintSpeed] = useState<number>(150);
+
+  // Phase 8 Diagnostics state
+  const [thinWallReport, setThinWallReport] = useState<ThinWallAnalysisResult | null>(null);
+  const [isAnalyzingThinWalls, setIsAnalyzingThinWalls] = useState(false);
+  const [minWallThreshold, setMinWallThreshold] = useState<number>(0.8);
+  const [islandReport, setIslandReport] = useState<IslandAnalysisResult | null>(null);
+  const [isAnalyzingIslands, setIsAnalyzingIslands] = useState(false);
 
   // Export state
   const [exportFormat, setExportFormat] = useState<"stl" | "obj" | "glb">("stl");
@@ -453,23 +466,6 @@ export function Inspector({
     }
   };
 
-  const handleEstimateCost = async () => {
-    if (!mesh || !projectId) return;
-    setIsEstimatingCost(true);
-    try {
-      const res = await apiClient.estimateCost(projectId, mesh.id, {
-        filament_id: selectedFilamentId,
-        infill_percentage: infillPct,
-        wall_count: wallCount,
-      });
-      setCostResult(res);
-    } catch (err: any) {
-      alert(`Cost estimation failed: ${err.message}`);
-    } finally {
-      setIsEstimatingCost(false);
-    }
-  };
-
   const handleRotate = async (customX?: number, customY?: number, customZ?: number) => {
     if (!mesh || !projectId) return;
     setIsRotating(true);
@@ -675,6 +671,61 @@ export function Inspector({
       setHollowMessage(`Hollow failed: ${err.message}`);
     } finally {
       setIsHollowing(false);
+    }
+  };
+
+  const handleAnalyzeThinWalls = async () => {
+    if (!mesh || !projectId) return;
+    setIsAnalyzingThinWalls(true);
+    try {
+      const res = await apiClient.analyzeThinWalls(projectId, mesh.id, {
+        min_wall_thickness_mm: minWallThreshold,
+      });
+      setThinWallReport(res);
+    } catch (err: any) {
+      alert(`Thin wall scan failed: ${err.message}`);
+    } finally {
+      setIsAnalyzingThinWalls(false);
+    }
+  };
+
+  const handleAnalyzeIslands = async () => {
+    if (!mesh || !projectId) return;
+    setIsAnalyzingIslands(true);
+    try {
+      const res = await apiClient.analyzeIslands(projectId, mesh.id, {});
+      setIslandReport(res);
+    } catch (err: any) {
+      alert(`Island scan failed: ${err.message}`);
+    } finally {
+      setIsAnalyzingIslands(false);
+    }
+  };
+
+  const handleEstimateCost = async () => {
+    if (!mesh || !projectId) return;
+    setIsEstimatingCost(true);
+    try {
+      const densityMap: Record<string, number> = {
+        PLA: 1.24,
+        PETG: 1.27,
+        ABS: 1.04,
+        TPU: 1.21,
+        Resin: 1.10,
+        Custom: 1.24,
+      };
+      const res = await apiClient.estimateCost(projectId, mesh.id, {
+        material_type: filamentMaterial,
+        density_g_cm3: densityMap[filamentMaterial] || 1.24,
+        infill_density_percent: infillPct,
+        spool_price_usd: spoolPrice,
+        print_speed_mm_s: printSpeed,
+      });
+      setCostResult(res);
+    } catch (err: any) {
+      alert(`Cost estimate failed: ${err.message}`);
+    } finally {
+      setIsEstimatingCost(false);
     }
   };
 
@@ -2110,6 +2161,200 @@ export function Inspector({
                 {!fitsZ && <p className="text-[11px] text-rose-300">• Height Z exceeds by {(dims[2] - bedH).toFixed(2)} mm</p>}
               </div>
             )}
+
+            {/* 1. THIN-WALL & DETAIL SCANNER */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <ScanSearch className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Thin-Wall & Fragility Scanner</span>
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/60">
+                  FDM & RESIN
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-400">Min Wall Threshold:</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="0.2"
+                    max="3.0"
+                    step="0.1"
+                    value={minWallThreshold}
+                    onChange={(e) => setMinWallThreshold(parseFloat(e.target.value) || 0.8)}
+                    className="w-14 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-right font-mono text-cyan-300 text-xs"
+                  />
+                  <span className="text-slate-500 font-mono text-[10px]">mm</span>
+                </div>
+              </div>
+
+              {thinWallReport && (
+                <div className={`p-2.5 rounded border text-[11px] space-y-1.5 ${
+                  thinWallReport.thin_wall_count === 0
+                    ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300"
+                    : "bg-amber-950/30 border-amber-500/40 text-amber-200"
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold flex items-center gap-1">
+                      {thinWallReport.thin_wall_count === 0 ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                      )}
+                      <span>{thinWallReport.thin_wall_count === 0 ? "All Walls Solid" : `${thinWallReport.thin_wall_count} Thin Spot(s)`}</span>
+                    </span>
+                    <span className="text-[10px] font-mono">
+                      Min: {thinWallReport.min_detected_thickness_mm} mm
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-300 leading-normal">{thinWallReport.summary}</p>
+                </div>
+              )}
+
+              <button
+                onClick={handleAnalyzeThinWalls}
+                disabled={!mesh || isAnalyzingThinWalls}
+                className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-cyan-500/40 text-cyan-300 rounded font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isAnalyzingThinWalls ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ScanSearch className="w-3.5 h-3.5" />}
+                <span>Scan for Fragile & Thin Walls</span>
+              </button>
+            </div>
+
+            {/* 2. FLOATING ISLAND DETECTOR */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <Compass className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Floating Island Detector</span>
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800/60">
+                  OVERHANG
+                </span>
+              </div>
+
+              {islandReport && (
+                <div className={`p-2.5 rounded border text-[11px] space-y-1.5 ${
+                  islandReport.island_count === 0
+                    ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300"
+                    : "bg-rose-950/30 border-rose-500/40 text-rose-200"
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold flex items-center gap-1">
+                      {islandReport.island_count === 0 ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      ) : (
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                      )}
+                      <span>{islandReport.island_count === 0 ? "No Floating Islands" : `${islandReport.island_count} Floating Island(s)`}</span>
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-300 leading-normal">{islandReport.summary}</p>
+                </div>
+              )}
+
+              <button
+                onClick={handleAnalyzeIslands}
+                disabled={!mesh || isAnalyzingIslands}
+                className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-amber-500/40 text-amber-300 rounded font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isAnalyzingIslands ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Compass className="w-3.5 h-3.5" />}
+                <span>Scan for Unsupported Mid-Air Islands</span>
+              </button>
+            </div>
+
+            {/* 3. PRINT COST & TIME ESTIMATOR */}
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                  <Coins className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Cost & Time Estimator</span>
+                </span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60">
+                  ESTIMATOR
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div>
+                  <label className="text-slate-400 block mb-1">Material</label>
+                  <select
+                    value={filamentMaterial}
+                    onChange={(e) => setFilamentMaterial(e.target.value as FilamentMaterial)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:outline-none focus:border-cyan-400"
+                  >
+                    <option value="PLA">PLA (1.24 g/cm³)</option>
+                    <option value="PETG">PETG (1.27 g/cm³)</option>
+                    <option value="ABS">ABS / ASA (1.04 g/cm³)</option>
+                    <option value="TPU">TPU 95A (1.21 g/cm³)</option>
+                    <option value="Resin">Resin (1.10 g/cm³)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-slate-400 block mb-1">Spool Price ($/kg)</label>
+                  <input
+                    type="number"
+                    min="5"
+                    max="200"
+                    step="1"
+                    value={spoolPrice}
+                    onChange={(e) => setSpoolPrice(parseFloat(e.target.value) || 20)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:outline-none focus:border-cyan-400 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px]">
+                  <span className="text-slate-400">Infill Density:</span>
+                  <span className="text-cyan-300 font-mono">{infillPct}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="5"
+                  value={infillPct}
+                  onChange={(e) => setInfillPct(parseInt(e.target.value, 10))}
+                  className="w-full accent-cyan-400 cursor-pointer"
+                />
+              </div>
+
+              {costResult && (
+                <div className="bg-slate-950/80 border border-emerald-500/40 rounded-lg p-2.5 space-y-2 text-[11px]">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                      <span className="text-slate-400 text-[10px] block">Filament Mass</span>
+                      <span className="text-emerald-400 font-bold font-mono text-xs">{costResult.mass_grams} g</span>
+                    </div>
+                    <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                      <span className="text-slate-400 text-[10px] block">Material Cost</span>
+                      <span className="text-emerald-300 font-bold font-mono text-xs">${costResult.material_cost_usd.toFixed(2)}</span>
+                    </div>
+                    <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                      <span className="text-slate-400 text-[10px] block">Est. Print Time</span>
+                      <span className="text-cyan-300 font-bold font-mono text-xs">{costResult.estimated_time_formatted}</span>
+                    </div>
+                    <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                      <span className="text-slate-400 text-[10px] block">Filament Length</span>
+                      <span className="text-slate-200 font-bold font-mono text-xs">{costResult.filament_length_m.toFixed(1)} m</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={handleEstimateCost}
+                disabled={!mesh || isEstimatingCost}
+                className="w-full py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-slate-950 font-bold rounded transition flex items-center justify-center space-x-1.5 text-xs disabled:opacity-50 cursor-pointer shadow"
+              >
+                {isEstimatingCost ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Coins className="w-3.5 h-3.5" />}
+                <span>Calculate Filament Mass & Cost</span>
+              </button>
+            </div>
           </div>
         )}
 

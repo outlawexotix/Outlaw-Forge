@@ -31,7 +31,13 @@ import {
   PlinthGeneratePayload,
   PlinthGenerateResult,
   KeyPegPayload,
-  KeyPegResult
+  KeyPegResult,
+  ThinWallAnalysisPayload,
+  ThinWallAnalysisResult,
+  IslandAnalysisPayload,
+  IslandAnalysisResult,
+  CostEstimationPayload,
+  CostEstimationResult,
 } from "@shared/types/api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -628,6 +634,39 @@ export class ApiClient {
     }
     return res.json();
   }
+
+  /**
+   * Phase 8: Analyze thin walls and fragile geometries
+   */
+  async analyzeThinWalls(projectId: string, modelId: string, payload?: ThinWallAnalysisPayload): Promise<ThinWallAnalysisResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/thin_walls`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to analyze thin walls");
+    }
+    return res.json();
+  }
+
+  /**
+   * Phase 8: Detect unsupported floating overhang islands
+   */
+  async analyzeIslands(projectId: string, modelId: string, payload?: IslandAnalysisPayload): Promise<IslandAnalysisResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/islands`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to analyze floating islands");
+    }
+    return res.json();
+  }
 }
 
 export const apiClient = new ApiClient();
+

@@ -11,8 +11,13 @@ from fastapi import HTTPException, status
 
 from app.core.config import settings
 from app.models.mesh import (
+    CostEstimationPayload,
+    CostEstimationResult,
     ExportModelPayload,
     ExportResult,
+    FloatingIslandModel,
+    IslandAnalysisPayload,
+    IslandAnalysisResult,
     MeshAnalysisResult,
     MeshRepairReport,
     OverhangAnalysisResult,
@@ -20,6 +25,9 @@ from app.models.mesh import (
     ScaleModelPayload,
     SliceModelPayload,
     SliceModelResult,
+    ThinRegionModel,
+    ThinWallAnalysisPayload,
+    ThinWallAnalysisResult,
 )
 from app.models.project import MeshBounds, MeshTransform
 
@@ -1015,6 +1023,291 @@ class MeshService:
 
         return dest_path
 
+    @staticmethod
+    def analyze_thin_walls(
+        mesh: trimesh.Trimesh,
+        min_wall_thickness_mm: float = 0.8,
+        sample_points: int = 500,
+        model_id: str = "model",
+    ) -> ThinWallAnalysisResult:
+        """
+        Analyze model surface geometry for walls/features thinner than min_wall_thickness_mm.
+        Uses inward normal raycasting to measure opposing surface distance.
+        """
+        if mesh is None or len(mesh.faces) == 0 or len(mesh.vertices) == 0:
+            raise MeshValidationError("Cannot analyze thin walls on an empty mesh.")
+
+        min_thickness = max(0.05, float(min_wall_thickness_mm))
+        num_samples = min(max(50, int(sample_points)), len(mesh.faces))
+
+        # Sample points on the surface with corresponding normals
+        try:
+            points, face_indices = trimesh.sample.sample_surface(mesh, num_samples)
+            normals = mesh.face_normals[face_indices]
+        except Exception:
+            # Fallback to face centers and face normals
+            step = max(1, len(mesh.faces) // num_samples)
+            face_indices = np.arange(0, len(mesh.faces), step)[:num_samples]
+            points = mesh.triangles_center[face_indices]
+            normals = mesh.face_normals[face_indices]
+
+        # Inward ray origins offset slightly inwards along -normal
+        ray_origins = points - (normals * 0.005)
+        ray_directions = -normals
+
+        thin_regions: List[ThinRegionModel] = []
+        min_detected = float("inf")
+        total_thin_area_estimate = 0.0
+
+        try:
+            locations, index_ray, index_tri = mesh.ray.intersects_location(
+                ray_origins=ray_origins,
+                ray_directions=ray_directions,
+            )
+
+            if len(index_ray) > 0:
+                # Group hits by ray index
+                for i in range(len(ray_origins)):
+                    hit_mask = index_ray == i
+                    if np.any(hit_mask):
+                        hit_locs = locations[hit_mask]
+                        diffs = hit_locs - ray_origins[i]
+                        dists = np.linalg.norm(diffs, axis=1)
+                        # Filter out self-intersections (too close to 0)
+                        valid_dists = dists[dists > 0.02]
+                        if len(valid_dists) > 0:
+                            closest_dist = float(np.min(valid_dists))
+                            if closest_dist < min_thickness:
+                                min_detected = min(min_detected, closest_dist)
+                                is_crit = closest_dist < (min_thickness * 0.5)
+                                thin_regions.append(
+                                    ThinRegionModel(
+                                        center_mm=[
+                                            round(float(points[i][0]), 2),
+                                            round(float(points[i][1]), 2),
+                                            round(float(points[i][2]), 2),
+                                        ],
+                                        thickness_mm=round(closest_dist, 3),
+                                        severity="critical" if is_crit else "warning",
+                                        feature_id=len(thin_regions) + 1,
+                                    )
+                                )
+                                total_thin_area_estimate += (mesh.area / len(points)) / 100.0
+        except Exception:
+            pass
+
+        # If no thin walls or raycast failed, test bounding box minimum extent
+        extents = [float(v) for v in mesh.extents]
+        if min(extents) < min_thickness and len(thin_regions) == 0:
+            min_detected = min(extents)
+            thin_regions.append(
+                ThinRegionModel(
+                    center_mm=[
+                        round(float(mesh.centroid[0]), 2),
+                        round(float(mesh.centroid[1]), 2),
+                        round(float(mesh.centroid[2]), 2),
+                    ],
+                    thickness_mm=round(min_detected, 3),
+                    severity="critical" if min_detected < (min_thickness * 0.5) else "warning",
+                    feature_id=1,
+                )
+            )
+            total_thin_area_estimate = mesh.area / 100.0
+
+        if min_detected == float("inf"):
+            min_detected = min_thickness
+
+        summary = (
+            f"Found {len(thin_regions)} thin feature region(s) (< {min_thickness:.2f}mm). "
+            f"Minimum wall thickness: {min_detected:.2f}mm."
+            if thin_regions
+            else f"No wall thickness issues detected (all evaluated surfaces >= {min_thickness:.2f}mm)."
+        )
+
+        return ThinWallAnalysisResult(
+            model_id=model_id,
+            thin_wall_count=len(thin_regions),
+            min_detected_thickness_mm=round(min_detected, 3),
+            thin_regions=thin_regions[:50],  # Cap output to top 50
+            total_thin_area_cm2=round(total_thin_area_estimate, 3),
+            summary=summary,
+        )
+
+    @staticmethod
+    def analyze_floating_islands(
+        mesh: trimesh.Trimesh,
+        min_island_area_mm2: float = 0.5,
+        overhang_threshold_deg: float = 65.0,
+        model_id: str = "model",
+    ) -> IslandAnalysisResult:
+        """
+        Detect severe downward-facing surfaces (islands) that have no supporting geometry underneath.
+        """
+        if mesh is None or len(mesh.faces) == 0 or len(mesh.vertices) == 0:
+            raise MeshValidationError("Cannot analyze floating islands on an empty mesh.")
+
+        min_z = float(mesh.bounds[0][2])
+        normals = mesh.face_normals
+        centers = mesh.triangles_center
+        areas = mesh.area_faces
+
+        # Severe downward normal condition: Z component < -0.85 (steeply facing the build plate)
+        downward_mask = (normals[:, 2] < -0.85) & (centers[:, 2] > (min_z + 1.5)) & (areas >= (min_island_area_mm2 / 2.0))
+        island_faces = np.where(downward_mask)[0]
+
+        islands: List[FloatingIslandModel] = []
+
+        if len(island_faces) > 0:
+            origins = centers[island_faces] + np.array([0, 0, -0.05])
+            directions = np.repeat([[0.0, 0.0, -1.0]], len(origins), axis=0)
+
+            try:
+                locations, index_ray, _ = mesh.ray.intersects_location(
+                    ray_origins=origins,
+                    ray_directions=directions,
+                )
+
+                hit_rays = set(index_ray) if len(index_ray) > 0 else set()
+
+                for i, face_idx in enumerate(island_faces):
+                    # If ray does not hit any part of the model below it within 20mm, it's an unsupported island
+                    is_unsupported = False
+                    if i not in hit_rays:
+                        is_unsupported = True
+                    else:
+                        mask = index_ray == i
+                        hit_dists = np.linalg.norm(locations[mask] - origins[i], axis=1)
+                        if len(hit_dists) > 0 and np.min(hit_dists) > 20.0:
+                            is_unsupported = True
+
+                    if is_unsupported:
+                        pt = centers[face_idx]
+                        is_crit = float(areas[face_idx]) > 5.0
+                        islands.append(
+                            FloatingIslandModel(
+                                point_mm=[
+                                    round(float(pt[0]), 2),
+                                    round(float(pt[1]), 2),
+                                    round(float(pt[2]), 2),
+                                ],
+                                layer_z_mm=round(float(pt[2]), 2),
+                                area_mm2=round(float(areas[face_idx]), 2),
+                                severity="critical" if is_crit else "warning",
+                            )
+                        )
+            except Exception:
+                # Fallback: flag top severe downward faces
+                for face_idx in island_faces[:10]:
+                    pt = centers[face_idx]
+                    islands.append(
+                        FloatingIslandModel(
+                            point_mm=[
+                                round(float(pt[0]), 2),
+                                round(float(pt[1]), 2),
+                                round(float(pt[2]), 2),
+                            ],
+                            layer_z_mm=round(float(pt[2]), 2),
+                            area_mm2=round(float(areas[face_idx]), 2),
+                            severity="warning",
+                        )
+                    )
+
+        summary = (
+            f"Detected {len(islands)} unsupported floating island(s) requiring print supports or reorientation."
+            if islands
+            else "No critical unsupported floating islands detected."
+        )
+
+        return IslandAnalysisResult(
+            model_id=model_id,
+            island_count=len(islands),
+            islands=islands[:50],
+            summary=summary,
+        )
+
+    @staticmethod
+    def estimate_cost_and_time(
+        mesh: trimesh.Trimesh,
+        payload: Optional[CostEstimationPayload] = None,
+        model_id: str = "model",
+    ) -> CostEstimationResult:
+        """
+        Calculate printed material volume, mass, filament length, cost, and print time.
+        """
+        if mesh is None or len(mesh.faces) == 0:
+            raise MeshValidationError("Cannot estimate print metrics for an empty mesh.")
+
+        if payload is None:
+            payload = CostEstimationPayload()
+
+        # 1. Volume & Surface Area
+        try:
+            if mesh.is_watertight and mesh.volume > 0:
+                model_vol_cm3 = float(mesh.volume) / 1000.0
+            else:
+                # Approximate volume from bounding box or convex hull
+                model_vol_cm3 = float(np.prod(mesh.extents)) * 0.45 / 1000.0
+        except Exception:
+            model_vol_cm3 = float(np.prod(mesh.extents)) * 0.45 / 1000.0
+
+        if model_vol_cm3 <= 0:
+            model_vol_cm3 = 1.0
+
+        surface_area_cm2 = float(mesh.area) / 100.0
+
+        # 2. Shell volume vs Infill volume
+        shell_thickness_cm = float(payload.wall_thickness_mm) / 10.0
+        shell_vol_cm3 = min(model_vol_cm3, surface_area_cm2 * shell_thickness_cm)
+        interior_vol_cm3 = max(0.0, model_vol_cm3 - shell_vol_cm3)
+        infill_vol_cm3 = interior_vol_cm3 * (float(payload.effective_infill_pct) / 100.0)
+
+        total_printed_vol_cm3 = shell_vol_cm3 + infill_vol_cm3
+
+        # 3. Mass & Cost
+        mass_grams = total_printed_vol_cm3 * float(payload.density_g_cm3)
+        spool_wt = max(1.0, float(payload.spool_weight_g))
+        spool_pr = float(payload.spool_price_usd)
+        material_cost = (mass_grams / spool_wt) * spool_pr
+
+        # 4. Filament Length (for 1.75mm diameter filament)
+        r_mm = 1.75 / 2.0
+        filament_area_mm2 = np.pi * (r_mm ** 2)
+        filament_length_m = (total_printed_vol_cm3 * 1000.0) / filament_area_mm2 / 1000.0
+
+        # 5. Print Time Calculation
+        layer_h = max(0.05, float(payload.layer_height_mm))
+        speed_mm_s = max(10.0, float(payload.print_speed_mm_s))
+        # Volumetric flow rate Q in mm3/s
+        q_flow = 0.4 * layer_h * speed_mm_s * 0.65
+        extrusion_secs = (total_printed_vol_cm3 * 1000.0) / max(0.1, q_flow)
+
+        height_mm = float(mesh.extents[2]) if len(mesh.extents) > 2 else 20.0
+        layer_count = max(1, int(height_mm / layer_h))
+        overhead_secs = layer_count * 1.5
+
+        total_minutes = (extrusion_secs + overhead_secs) / 60.0
+        hours = int(total_minutes // 60)
+        mins = int(total_minutes % 60)
+        formatted_time = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
+
+        return CostEstimationResult(
+            model_id=model_id,
+            model_volume_cm3=round(model_vol_cm3, 2),
+            shell_volume_cm3=round(shell_vol_cm3, 2),
+            infill_volume_cm3=round(infill_vol_cm3, 2),
+            total_printed_volume_cm3=round(total_printed_vol_cm3, 2),
+            mass_grams=round(mass_grams, 1),
+            estimated_mass_grams=round(mass_grams, 1),
+            filament_length_m=round(filament_length_m, 2),
+            estimated_filament_length_m=round(filament_length_m, 2),
+            material_cost_usd=round(material_cost, 2),
+            estimated_cost_usd=round(material_cost, 2),
+            estimated_time_minutes=round(total_minutes, 1),
+            estimated_print_time_min=round(total_minutes, 1),
+            estimated_time_formatted=formatted_time,
+            material_type=payload.material_type or "PLA",
+        )
+
 
 # Singleton instance and module-level function aliases
 mesh_service = MeshService()
@@ -1031,3 +1324,7 @@ repair_mesh = MeshService.repair_mesh
 hollow_mesh = MeshService.hollow_mesh
 arrange_models_on_bed = MeshService.arrange_models_on_bed
 export_project_3mf = MeshService.export_project_3mf
+analyze_thin_walls = MeshService.analyze_thin_walls
+analyze_floating_islands = MeshService.analyze_floating_islands
+estimate_cost_and_time = MeshService.estimate_cost_and_time
+

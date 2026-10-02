@@ -11,12 +11,16 @@ from app.models.mesh import (
     ArrangeItemPlacement,
     ArrangeProjectPayload,
     ArrangeProjectResult,
+    CostEstimationPayload,
+    CostEstimationResult,
     ExportModelPayload,
     ExportModelResponse,
     ExportProject3MFPayload,
     ExportProject3MFResponse,
     HollowModelPayload,
     HollowModelResult,
+    IslandAnalysisPayload,
+    IslandAnalysisResult,
     OverhangAnalysisResult,
     RepairModelPayload,
     RepairModelResult,
@@ -24,6 +28,8 @@ from app.models.mesh import (
     ScaleModelPayload,
     SliceModelPayload,
     SliceModelResult,
+    ThinWallAnalysisPayload,
+    ThinWallAnalysisResult,
 )
 from app.models.printer import PrinterProfile
 from app.models.project import (
@@ -1454,3 +1460,109 @@ async def export_project_3mf(
         models_exported=len(models_data),
         message="Successfully generated 3MF production archive for OrcaSlicer & Bambu Studio",
     )
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/thin_walls",
+    response_model=ThinWallAnalysisResult,
+    summary="Analyze thin walls and fragile geometries in a 3D model",
+)
+async def analyze_thin_walls_endpoint(
+    project_id: str,
+    model_id: str,
+    payload: ThinWallAnalysisPayload = ThinWallAnalysisPayload(),
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    model = await project_repo.get_working_model_for_project(project_id, model_id)
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found in project '{project_id}'",
+        )
+
+    file_path = storage_service.resolve_path(model.storage_path)
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model file not found on disk.",
+        )
+
+    mesh = mesh_service.load_mesh(str(file_path))
+    result = mesh_service.analyze_thin_walls(
+        mesh=mesh,
+        min_wall_thickness_mm=payload.min_wall_thickness_mm,
+        sample_points=payload.sample_points,
+        model_id=model_id,
+    )
+    return result
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/islands",
+    response_model=IslandAnalysisResult,
+    summary="Detect unsupported floating overhang islands in a 3D model",
+)
+async def analyze_islands_endpoint(
+    project_id: str,
+    model_id: str,
+    payload: IslandAnalysisPayload = IslandAnalysisPayload(),
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    model = await project_repo.get_working_model_for_project(project_id, model_id)
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found in project '{project_id}'",
+        )
+
+    file_path = storage_service.resolve_path(model.storage_path)
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model file not found on disk.",
+        )
+
+    mesh = mesh_service.load_mesh(str(file_path))
+    result = mesh_service.analyze_floating_islands(
+        mesh=mesh,
+        min_island_area_mm2=payload.min_island_area_mm2,
+        overhang_threshold_deg=payload.overhang_threshold_deg,
+        model_id=model_id,
+    )
+    return result
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/estimate_cost",
+    response_model=CostEstimationResult,
+    summary="Calculate mass, filament length, material cost, and print duration",
+)
+async def estimate_cost_endpoint(
+    project_id: str,
+    model_id: str,
+    payload: CostEstimationPayload = CostEstimationPayload(),
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    model = await project_repo.get_working_model_for_project(project_id, model_id)
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found in project '{project_id}'",
+        )
+
+    file_path = storage_service.resolve_path(model.storage_path)
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model file not found on disk.",
+        )
+
+    mesh = mesh_service.load_mesh(str(file_path))
+    result = mesh_service.estimate_cost_and_time(
+        mesh=mesh,
+        payload=payload,
+        model_id=model_id,
+    )
+    return result
+
+

@@ -397,7 +397,9 @@ export type FilamentMaterial =
   | 'PC'
   | 'PA-CF'
   | 'PETG-CF'
-  | 'Silk PLA';
+  | 'Silk PLA'
+  | 'Resin'
+  | 'Custom';
 
 export interface FilamentProfile {
   id: string;
@@ -642,6 +644,75 @@ export interface KeyPegResult {
   peg_positions: [number, number, number][];
   message: string;
 }
+
+// --- Phase 8: Advanced Printability, Diagnostics & Cost Estimator ---
+
+export interface ThinRegion {
+  center_mm: [number, number, number];
+  thickness_mm: number;
+  severity: 'warning' | 'critical';
+  feature_id: number;
+}
+
+export interface ThinWallAnalysisPayload {
+  min_wall_thickness_mm?: number;
+  sample_points?: number;
+}
+
+export interface ThinWallAnalysisResult {
+  model_id: string;
+  thin_wall_count: number;
+  min_detected_thickness_mm: number;
+  thin_regions: ThinRegion[];
+  total_thin_area_cm2: number;
+  summary: string;
+}
+
+export interface FloatingIsland {
+  point_mm: [number, number, number];
+  layer_z_mm: number;
+  area_mm2: number;
+  severity: 'warning' | 'critical';
+}
+
+export interface IslandAnalysisPayload {
+  min_island_area_mm2?: number;
+  overhang_threshold_deg?: number;
+}
+
+export interface IslandAnalysisResult {
+  model_id: string;
+  island_count: number;
+  islands: FloatingIsland[];
+  summary: string;
+}
+
+export interface CostEstimationPayload {
+  material_type?: FilamentMaterial;
+  density_g_cm3?: number;
+  spool_price_usd?: number;
+  spool_weight_g?: number;
+  infill_density_percent?: number;
+  wall_thickness_mm?: number;
+  top_bottom_thickness_mm?: number;
+  print_speed_mm_s?: number;
+  layer_height_mm?: number;
+}
+
+export interface CostEstimationResult {
+  model_id: string;
+  model_volume_cm3: number;
+  shell_volume_cm3: number;
+  infill_volume_cm3: number;
+  total_printed_volume_cm3: number;
+  mass_grams: number;
+  filament_length_m: number;
+  material_cost_usd: number;
+  estimated_time_minutes: number;
+  estimated_time_formatted: string;
+  material_type: string;
+}
+
 
 
 
