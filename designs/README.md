@@ -1,6 +1,6 @@
 # 3D Designs
 
-This directory contains 3D printing designs ready for printing.
+This directory is reserved for versioned, human-reviewed design assets. It is currently a structure for future contributions; application uploads and generated exports belong in local `data/` storage instead.
 
 ## File Formats
 
@@ -10,13 +10,13 @@ This directory contains 3D printing designs ready for printing.
 
 ## Organization
 
-Designs are organized by category:
+When assets are added, organize them by category:
 - `parts/` - Individual components and parts
 - `assemblies/` - Complete assemblies requiring multiple parts
 - `tools/` - Useful workshop tools and fixtures
 - `misc/` - Miscellaneous and experimental designs
 
-## Before Printing
+## Before printing
 
 1. Check file size and dimensions
 2. Review support requirements

@@ -1,25 +1,23 @@
 # Resources
 
-## Reference Materials
-
-Links and information for 3D printing resources.
+Reference links for the design and printing workflows around Outlaw Forge. These are external tools, not runtime dependencies of the repository.
 
 ### CAD Software
-- FreeCAD - Free and open-source CAD software
-- Fusion 360 - Professional CAD/CAM
-- TinkerCAD - Browser-based 3D design
+- [FreeCAD](https://www.freecad.org/) — free and open-source CAD software
+- [Fusion](https://www.autodesk.com/products/fusion-360/overview) — professional CAD/CAM
+- [Tinkercad](https://www.tinkercad.com/) — browser-based 3D design
 
 ### Slicing Software
-- Cura - Open-source slicer
-- PrusaSlicer - Prusa's dedicated slicer
-- Bambu Studio - Bambu Labs slicer
-- SuperSlicer - Community fork of PrusaSlicer
+- [UltiMaker Cura](https://ultimaker.com/software/ultimaker-cura/) — open-source slicer
+- [PrusaSlicer](https://www.prusa3d.com/page/prusaslicer_424/) — feature-rich slicer
+- [Bambu Studio](https://github.com/bambulab/BambuStudio) — Bambu Lab slicer
+- [SuperSlicer](https://github.com/supermerill/SuperSlicer) — community slicer fork
 
 ### 3D Model Repositories
-- Printables.com - Community 3D printing designs
-- Thingiverse - Large repository of 3D models
-- MyMiniFactory - Curated 3D printing models
-- GrabCAD - Engineering design community
+- [Printables](https://www.printables.com/) — community 3D-printing designs
+- [Thingiverse](https://www.thingiverse.com/) — large model repository
+- [MyMiniFactory](https://www.myminifactory.com/) — curated 3D-printing models
+- [GrabCAD](https://grabcad.com/) — engineering design community
 
 ### Materials & Suppliers
-- See material-reference.md in docs/ for material information
+- Material guidance is not yet maintained as a repository specification; record project-specific material and temperature notes in the project metadata.

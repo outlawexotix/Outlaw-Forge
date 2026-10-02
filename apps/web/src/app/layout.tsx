@@ -4,7 +4,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "OUTLAW FORGE | Precision 3D Mesh Engine & CAD Workbench",
-  description: "Next-generation high-performance 3D CAD modeler, mesh repair, and additive manufacturing slicing workbench.",
+  description:
+    "A practical 3D-print preparation workbench for mesh inspection, repair, transformation, arrangement, and printer-aware export.",
 };
 
 export default function RootLayout({

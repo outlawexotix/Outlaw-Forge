@@ -1,29 +1,26 @@
-# Contributing to Outlaw-Forge
+# Contributing to Outlaw Forge
 
-We welcome contributions! Here's how you can help:
+Outlaw Forge is a TypeScript/Python monorepo. Contributions are welcome when they keep geometry deterministic, preserve source assets, and include the verification needed to explain the change.
 
-## How to Contribute
+## Development flow
 
-1. **Fork the repository**
-2. **Create a feature branch** (`git checkout -b feature/amazing-design`)
-3. **Make your changes** and commit with clear messages
-4. **Push to your fork** and submit a Pull Request
+1. Fork the repository and create a focused branch, for example `codex/mesh-export-fix`.
+2. Install the JavaScript and Python dependencies described in the [getting-started guide](docs/getting-started.md).
+3. Make the smallest coherent change and update the relevant documentation.
+4. Run `npm run test:backend`, `npm run lint`, and `npm run build`.
+5. If the API behavior changed, run the live health and critical-workflow checks as well.
+6. Open a pull request with the intent, verification performed, and any known limitations.
 
-## Design Submission Guidelines
+## Geometry and data rules
 
-- Include clear model names and descriptions
-- Provide print time and material estimates
-- Include any special printing instructions
-- Test your designs before submitting
-- Add appropriate documentation
+- Use millimetres for persisted dimensions and API values.
+- Do not overwrite original uploads; derived meshes belong in working or export storage.
+- Keep API contracts in `packages/shared/` synchronized with Pydantic models.
+- Do not let advisory AI code silently mutate geometry or project state.
+- Add regression coverage for bug fixes, especially mesh, storage, and printability behavior.
 
-## Code of Conduct
+## Design submissions
 
-- Be respectful and constructive
-- Provide helpful feedback
-- Respect intellectual property
-- Follow the project's license terms
+Design assets should include a clear name, supported file format, dimensions, intended material, and any special printing instructions. Put reusable assets in the appropriate `designs/` subdirectory and keep generated runtime files out of Git.
 
-## Questions?
-
-Open an issue or start a discussion for questions or suggestions!
+Please be respectful, document assumptions, and respect the MIT license and third-party intellectual property.
