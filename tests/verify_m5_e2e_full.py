@@ -123,11 +123,17 @@ def verify_layer2_static_export_build() -> Tuple[bool, str]:
     next_cache = REPO_ROOT / "apps" / "web" / ".next"
     index_html = out_dir / "index.html"
 
-    # Pre-clean stale outputs to prevent false positives
-    if out_dir.exists():
-        shutil.rmtree(out_dir, ignore_errors=True)
-    if next_cache.exists():
-        shutil.rmtree(next_cache, ignore_errors=True)
+    # Pre-clean stale outputs to prevent false positives and Windows lock races
+    subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Remove-Item -Recurse -Force apps/web/out, apps/web/.next -ErrorAction SilentlyContinue",
+        ],
+        cwd=str(REPO_ROOT),
+        check=False,
+    )
 
     build_env = os.environ.copy()
     build_env["OUTPUT_EXPORT"] = "true"
