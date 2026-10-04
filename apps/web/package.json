@@ -1,7 +1,7 @@
 {
   "name": "outlaw-forge-frontend",
   "version": "0.1.0",
-  "description": "Next.js and Three.js CAD-style workbench for Outlaw Forge.",
+  "description": "Static Next.js and Three.js print-preparation cockpit for the Outlaw Forge desktop app.",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",

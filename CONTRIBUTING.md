@@ -9,7 +9,8 @@ Outlaw Forge is a TypeScript/Python monorepo. Contributions are welcome when the
 3. Make the smallest coherent change and update the relevant documentation.
 4. Run `npm run test:backend`, `npm run lint`, and `npm run build`.
 5. If the API behavior changed, run the live health and critical-workflow checks as well.
-6. Open a pull request with the intent, verification performed, and any known limitations.
+6. For desktop shell, sidecar, static export, or packaging changes, run `python tests/verify_m5_e2e_full.py`.
+7. Open a pull request with the intent, verification performed, and any known limitations.
 
 ## Geometry and data rules
 
@@ -22,5 +23,9 @@ Outlaw Forge is a TypeScript/Python monorepo. Contributions are welcome when the
 ## Design submissions
 
 Design assets should include a clear name, supported file format, dimensions, intended material, and any special printing instructions. Put reusable assets in the appropriate `designs/` subdirectory and keep generated runtime files out of Git.
+
+## Documentation accuracy
+
+Public documentation must distinguish between implemented capabilities, packaging or release work still in progress, and deferred ideas. Do not describe direct G-code generation, signed installers, or automatic updates as available until they have passed their release checks.
 
 Please be respectful, document assumptions, and respect the MIT license and third-party intellectual property.

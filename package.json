@@ -1,7 +1,7 @@
 {
   "name": "outlaw-forge-monorepo",
   "version": "0.1.0",
-  "description": "A web-based 3D-print preparation workbench for mesh inspection, repair, transformation, and printer-aware export.",
+  "description": "Local-first desktop workbench for deterministic 3D-print mesh inspection, repair, preparation, and export.",
   "private": true,
   "workspaces": [
     "apps/*",

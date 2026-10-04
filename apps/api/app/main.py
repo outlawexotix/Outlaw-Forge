@@ -35,8 +35,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     description=(
-        "API for Outlaw Forge project management, mesh processing, printer profiles, "
-        "printability analysis, and specialized 3D-print workflows."
+        "Local geometry sidecar for Outlaw Forge projects, deterministic mesh processing, "
+        "printer-aware readiness analysis, model preparation, and export workflows."
     ),
     version=settings.VERSION,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",

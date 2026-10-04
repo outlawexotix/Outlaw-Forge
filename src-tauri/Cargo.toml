@@ -1,7 +1,7 @@
 [package]
 name = "outlaw-forge-desktop"
 version = "0.1.0"
-description = "Outlaw Forge 3D Print Preparation Workbench"
+description = "Local-first desktop workbench for deterministic 3D-print preparation"
 authors = ["Outlaw Forge Team"]
 edition = "2021"
 

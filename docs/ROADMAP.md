@@ -1,33 +1,36 @@
 # Roadmap
 
-The repository has moved beyond the original model-to-printability scaffold. This roadmap separates the current baseline from work that is still being designed.
+Outlaw Forge has moved from a browser prototype to an implemented local desktop architecture. This roadmap separates the verified baseline from release engineering and future slicing capabilities.
 
-## Current baseline
+## Implemented baseline
 
-- Project and printer profile CRUD backed by SQLite.
-- Mesh import, metadata, dimensions, surface area, volume, and watertightness checks.
-- Three.js viewport with build plate, camera controls, orientation gizmo, wireframe, and model selection.
-- Deterministic transforms: scale, rotate, lay on face, and coordinate conversion.
-- Printability analysis, overhang inspection, auto-arrangement, and operation history.
-- Plane-based slicing with connector pins, mesh healing, hollowing, and export support.
-- OrcaSlicer-oriented materials and 3MF export workflow.
-- MaskSmith and FigureForge studio workflows.
-- Automated backend tests, frontend lint/build checks, and black-box HTTP verification.
+- Tauri 2 desktop shell with a static Next.js and Three.js workbench.
+- Supervised FastAPI geometry sidecar using a dynamic loopback port.
+- Windows Job Object lifecycle management to prevent orphaned sidecar processes.
+- Native menus, keyboard accelerators, dialogs, permissions, and STL/OBJ/3MF associations.
+- SQLite-backed projects, printer profiles, working model revisions, and operation history.
+- Print-readiness cockpit for overhangs, thin walls, watertightness, printer fit, and material estimates.
+- Deterministic transform, repair, hollow, slice, connector, arrangement, infill, and reinforcement workflows.
+- Interactive viewport inspection, layer and overhang modes, build-plate controls, and direct model manipulation.
+- OrcaSlicer-oriented 3MF export, MaskSmith, and FigureForge workflows.
+- PyInstaller and Tauri packaging automation with dry-run preflight checks.
+- Backend, static export, supervisor, lifecycle, automation, and master E2E verification suites.
 
-## Near-term priorities
+## Current priorities
 
-1. Make project state restoration and save feedback consistent across every model operation.
-2. Expand printer profile editing and validate non-rectangular build volumes.
-3. Add focused frontend component and browser workflow tests.
-4. Improve export diagnostics and preserve a clearer provenance record for derived meshes.
-5. Consolidate the remaining specification pages with implementation examples and screenshots.
+1. Upgrade the Next.js dependency line and remove current production audit findings.
+2. Produce repeatable signed Windows installer artifacts from a clean build host.
+3. Add browser-level interaction tests for the print-readiness cockpit and advanced geometry drawer.
+4. Improve native open/save integration so all import and export paths use desktop dialogs.
+5. Add migration and backup tooling for local SQLite projects and derived mesh storage.
+6. Expand printer profiles and validate non-rectangular build volumes.
 
-## Deferred work
+## Deferred capabilities
 
-- Direct G-code generation and slicer process integration.
-- Desktop packaging with Tauri or an equivalent shell.
-- Provider-backed AI suggestions for orientation, reference analysis, and print diagnosis.
-- Additional mesh algorithms such as advanced support planning and thin-wall analysis.
-- Production deployment configuration and multi-user authentication.
+- Direct G-code generation and full slicer-engine integration.
+- Automatic support generation and toolpath optimization.
+- Signed auto-update distribution for desktop releases.
+- Multi-user server deployment and authentication.
+- Provider-backed advisory AI for reference analysis and print diagnosis.
 
-Roadmap items are proposals until they are represented by code and verification. See the [QA guide](./QA_ACCEPTANCE.md) for the checks that define a usable change.
+Roadmap items are proposals until code, contracts, and verification land together. See the [QA guide](./QA_ACCEPTANCE.md) for completion criteria.
