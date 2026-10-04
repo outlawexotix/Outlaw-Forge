@@ -16,7 +16,7 @@
     "test:frontend": "npm run test --workspace=apps/web --if-present",
     "test:smoke": "python tests/verify_health.py",
     "lint": "npm run lint --workspace=apps/web",
-    "desktop:dev": "powershell -ExecutionPolicy Bypass -File scripts/desktop-dev.ps1",
-    "desktop:build": "powershell -ExecutionPolicy Bypass -File scripts/desktop-build.ps1"
+    "desktop:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/desktop-dev.ps1",
+    "desktop:build": "powershell -ExecutionPolicy Bypass -File ./scripts/desktop-build.ps1"
   }
 }
