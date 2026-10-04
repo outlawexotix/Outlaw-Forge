@@ -4,7 +4,9 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Header, SaveStatus } from "@/components/layout/Header";
 import { Sidebar, CADTool } from "@/components/layout/Sidebar";
 import { Inspector } from "@/components/layout/Inspector";
+import { ReadinessPanel } from "@/components/layout/ReadinessPanel";
 import { StatusBar } from "@/components/layout/StatusBar";
+import { WorkflowRail } from "@/components/layout/WorkflowRail";
 import { CreateProjectDialog } from "@/components/project/CreateProjectDialog";
 import { CreatePrinterDialog } from "@/components/project/CreatePrinterDialog";
 import { ProjectListDialog } from "@/components/project/ProjectListDialog";
@@ -19,6 +21,7 @@ import {
   WorkingModel 
 } from "@shared/types/api";
 import dynamic from "next/dynamic";
+import { X } from "lucide-react";
 
 const ViewportContainer = dynamic(
   () => import("@/components/viewport/ViewportContainer").then((mod) => mod.ViewportContainer),
@@ -77,6 +80,7 @@ export default function WorkbenchPage() {
   const [isImportDialogOpen, setIsImportDialogOpen] = useState<boolean>(false);
   const [isCreatePrinterDialogOpen, setIsCreatePrinterDialogOpen] = useState<boolean>(false);
   const [isCalibrationDialogOpen, setIsCalibrationDialogOpen] = useState<boolean>(false);
+  const [isAdvancedToolsOpen, setIsAdvancedToolsOpen] = useState<boolean>(false);
 
 
 
@@ -113,6 +117,14 @@ export default function WorkbenchPage() {
   const activeWorkingModel: WorkingModel | null = 
     workingModels.find((m) => m.id === selectedModelId) ||
     (workingModels.length > 0 ? workingModels[workingModels.length - 1] : null);
+
+  const activeDimensions = activeWorkingModel?.bounds.dimensions_mm ?? [0, 0, 0];
+  const activeModelFits = Boolean(
+    activeWorkingModel &&
+      activeDimensions[0] <= activePrinter.build_width_mm &&
+      activeDimensions[1] <= activePrinter.build_depth_mm &&
+      activeDimensions[2] <= activePrinter.build_height_mm
+  );
 
   // 1. Backend Health Check
   const checkHealth = useCallback(async (signal?: AbortSignal) => {
@@ -492,6 +504,7 @@ export default function WorkbenchPage() {
         isHealthLoading={isHealthLoading}
         healthError={healthError}
         activeProject={activeProject}
+        activePrinter={activePrinter}
         saveStatus={saveStatus}
         onNewProject={() => setIsCreateDialogOpen(true)}
         onOpenProjectList={() => setIsListDialogOpen(true)}
@@ -508,7 +521,7 @@ export default function WorkbenchPage() {
       />
 
       {/* 2. Main CAD Workbench Body */}
-      <div className="flex-1 flex overflow-hidden relative">
+      <div className="flex-1 flex overflow-hidden relative min-h-0">
         {/* Left CAD Tool Palette */}
         <Sidebar
           activeTool={activeTool}
@@ -522,7 +535,17 @@ export default function WorkbenchPage() {
         />
 
         {/* Central 3D Viewport Area */}
-        <main className="flex-1 relative flex flex-col items-center justify-center bg-neutral-950 overflow-hidden">
+        <main className="flex-1 min-w-0 relative flex flex-col items-center justify-center bg-neutral-950 overflow-hidden">
+          <div className="absolute top-4 left-5 z-20 pointer-events-none">
+            <div className="text-[14px] font-semibold text-neutral-100 drop-shadow-lg">
+              {activeWorkingModel?.filename || "No model loaded"}
+            </div>
+            <div className="mt-1 text-[10px] font-mono text-neutral-500">
+              {activeWorkingModel
+                ? `${activeDimensions[0].toFixed(1)} × ${activeDimensions[1].toFixed(1)} × ${activeDimensions[2].toFixed(1)} mm`
+                : "Drop a mesh file into the viewport"}
+            </div>
+          </div>
           <ViewportContainer
             printer={activePrinter}
             model={activeWorkingModel}
@@ -545,27 +568,55 @@ export default function WorkbenchPage() {
         </main>
 
 
-        {/* Right Inspector & Stats Panel */}
-        <Inspector
+        <ReadinessPanel
           projectId={activeProject?.id || ""}
           mesh={activeWorkingModel}
-          models={workingModels}
-          selectedModelId={activeWorkingModel?.id || null}
           printer={activePrinter}
-          printers={printers}
-          operations={activeProject?.operations || []}
-          onSelectModel={(id) => setSelectedModelId(id)}
-          onPrinterChange={handlePrinterChange}
-          onOpenCreatePrinter={() => setIsCreatePrinterDialogOpen(true)}
           onModelUpdated={handleModelUpdated}
-          onModelDeleted={handleModelDeleted}
-          onModelSliced={handleModelSliced}
-          onSlicePlaneChange={handleSlicePlaneChange}
           onOperationRecorded={handleRefreshOperations}
-          onProjectRefreshed={handleRefreshOperations}
-          onAutoArrange={handleAutoArrange}
+          onOpenAdvanced={() => setIsAdvancedToolsOpen(true)}
         />
+
+        {isAdvancedToolsOpen && (
+          <div className="absolute inset-0 z-[70] bg-black/60 backdrop-blur-[2px] flex justify-end">
+            <div className="relative h-full w-[420px] max-w-[92vw] border-l border-neutral-700 bg-neutral-950 shadow-2xl">
+              <button
+                onClick={() => setIsAdvancedToolsOpen(false)}
+                className="absolute top-2 right-2 z-[80] h-7 w-7 border border-neutral-700 bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white flex items-center justify-center rounded-sm"
+                title="Close advanced tools"
+              >
+                <X className="h-4 w-4" />
+              </button>
+              <Inspector
+                projectId={activeProject?.id || ""}
+                mesh={activeWorkingModel}
+                models={workingModels}
+                selectedModelId={activeWorkingModel?.id || null}
+                printer={activePrinter}
+                printers={printers}
+                operations={activeProject?.operations || []}
+                onSelectModel={(id) => setSelectedModelId(id)}
+                onPrinterChange={handlePrinterChange}
+                onOpenCreatePrinter={() => setIsCreatePrinterDialogOpen(true)}
+                onModelUpdated={handleModelUpdated}
+                onModelDeleted={handleModelDeleted}
+                onModelSliced={handleModelSliced}
+                onSlicePlaneChange={handleSlicePlaneChange}
+                onOperationRecorded={handleRefreshOperations}
+                onProjectRefreshed={handleRefreshOperations}
+                onAutoArrange={handleAutoArrange}
+              />
+            </div>
+          </div>
+        )}
       </div>
+
+      <WorkflowRail
+        hasModel={Boolean(activeWorkingModel)}
+        isWatertight={Boolean(activeWorkingModel?.is_watertight)}
+        fitsBuildVolume={activeModelFits}
+        operations={activeProject?.operations ?? []}
+      />
 
       {/* 3. Status Bar */}
       <StatusBar

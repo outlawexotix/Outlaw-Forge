@@ -552,8 +552,8 @@ export class ApiClient {
   async estimateCost(
     projectId: string,
     modelId: string,
-    payload?: import("@shared/types/api").CostEstimationPayload
-  ): Promise<import("@shared/types/api").CostEstimationResult> {
+    payload?: CostEstimationPayload
+  ): Promise<CostEstimationResult> {
     const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/estimate_cost`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
@@ -561,7 +561,7 @@ export class ApiClient {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || "Failed to estimate cost");
+      throw new Error(err.detail || "Failed to estimate material cost");
     }
     return res.json();
   }

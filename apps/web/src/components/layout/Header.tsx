@@ -1,23 +1,20 @@
 "use client";
 
 import React from "react";
-import { HealthStatusResponse, Project } from "@shared/types/api";
-import { 
-  Box, 
-  Activity, 
-  Layers, 
-  Settings, 
-  FolderOpen, 
+import {
+  Box,
+  ChevronDown,
+  CircleHelp,
+  FolderOpen,
   FolderPlus,
-  Save, 
-  Cpu, 
-  CheckCircle2, 
-  AlertTriangle, 
-  XCircle,
-  HelpCircle,
+  Gauge,
+  Layers3,
+  Save,
+  Settings,
   Sparkles,
-  ChevronDown
+  Upload,
 } from "lucide-react";
+import { HealthStatusResponse, PrinterProfile, Project } from "@shared/types/api";
 
 export type SaveStatus = "saved" | "saving" | "unsaved";
 
@@ -26,6 +23,7 @@ interface HeaderProps {
   isHealthLoading: boolean;
   healthError: string | null;
   activeProject?: Project | null;
+  activePrinter?: PrinterProfile | null;
   saveStatus?: SaveStatus;
   onNewProject?: () => void;
   onOpenProjectList?: () => void;
@@ -40,6 +38,7 @@ export function Header({
   isHealthLoading,
   healthError,
   activeProject = null,
+  activePrinter = null,
   saveStatus = "saved",
   onNewProject,
   onOpenProjectList,
@@ -48,222 +47,90 @@ export function Header({
   onOpenCalibration,
   onAutoArrange,
 }: HeaderProps) {
-  const getHealthDisplay = () => {
-    if (isHealthLoading && !health) {
-      return {
-        label: "CONNECTING",
-        color: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-        dotColor: "bg-amber-400 animate-pulse",
-        icon: <Activity className="w-3 h-3 text-amber-400 animate-spin" />,
-      };
-    }
-
-    if (healthError || !health) {
-      return {
-        label: "OFFLINE",
-        color: "bg-rose-500/10 text-rose-400 border-rose-500/30",
-        dotColor: "bg-rose-500",
-        icon: <XCircle className="w-3 h-3 text-rose-400" />,
-      };
-    }
-
-    if (health.status === "healthy") {
-      return {
-        label: `ONLINE v${health.version}`,
-        color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-        dotColor: "bg-emerald-400",
-        icon: <CheckCircle2 className="w-3 h-3 text-emerald-400" />,
-      };
-    }
-
-    return {
-      label: "DEGRADED",
-      color: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-      dotColor: "bg-amber-400",
-      icon: <AlertTriangle className="w-3 h-3 text-amber-400" />,
-    };
-  };
-
-  const getSaveStatusDisplay = () => {
-    switch (saveStatus) {
-      case "saving":
-        return {
-          label: "SAVING",
-          color: "bg-amber-500/15 text-amber-300 border-amber-500/40 animate-pulse",
-          icon: <Activity className="w-3 h-3 text-amber-400 animate-spin" />,
-        };
-      case "unsaved":
-        return {
-          label: "UNSAVED",
-          color: "bg-amber-500/15 text-amber-400 border-amber-500/40",
-          icon: <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />,
-        };
-      case "saved":
-      default:
-        return {
-          label: "SYNCED",
-          color: "bg-neutral-800 text-neutral-400 border-neutral-700",
-          icon: <CheckCircle2 className="w-3 h-3 text-neutral-400" />,
-        };
-    }
-  };
-
-  const healthStatus = getHealthDisplay();
-  const saveIndicator = getSaveStatusDisplay();
+  const engineOnline = Boolean(health && health.status === "healthy" && !healthError);
+  const projectLabel = activeProject?.name || "Untitled Project";
 
   return (
-    <header className="h-10 w-full bg-neutral-950 border-b border-neutral-800 px-3 flex items-center justify-between z-50 select-none">
-      {/* Left: Brand Identity & Active Project Controls */}
-      <div className="flex items-center space-x-3 min-w-0">
-        {/* App Logo */}
-        <div className="flex items-center space-x-2 shrink-0">
-          <div className="w-6 h-6 rounded bg-amber-500 flex items-center justify-center text-neutral-950 font-black">
-            <Box className="w-3.5 h-3.5 stroke-[2.5]" />
-          </div>
-          <div className="hidden sm:flex items-center space-x-1.5">
-            <span className="font-mono text-xs font-bold tracking-wider text-neutral-100 uppercase">
-              OUTLAW<span className="text-amber-500">FORGE</span>
-            </span>
-            <span className="px-1 py-0.2 text-[8px] font-mono font-bold bg-neutral-900 text-neutral-400 border border-neutral-800 rounded">
-              CAD
-            </span>
-          </div>
+    <header className="h-12 w-full shrink-0 border-b border-neutral-800 bg-[#0b0d10] flex items-center select-none z-50">
+      <div className="h-full px-4 flex items-center gap-3 border-r border-neutral-800 shrink-0">
+        <div className="h-7 w-7 border border-amber-500/70 bg-amber-500/10 flex items-center justify-center rounded-sm">
+          <Box className="h-4 w-4 text-amber-400 stroke-[2.2]" />
         </div>
-
-        <div className="h-4 w-[1px] bg-neutral-800 shrink-0" />
-
-        {/* Project Selector & Actions */}
-        <div className="flex items-center space-x-1.5 min-w-0">
-          {/* Active Project Breadcrumb */}
-          <button
-            onClick={onOpenProjectList}
-            className="flex items-center space-x-2 bg-neutral-900 hover:bg-neutral-850 border border-neutral-800 hover:border-neutral-700 rounded px-2 py-1 transition group max-w-[240px] sm:max-w-[320px] text-left"
-            title="Open Project Manager"
-          >
-            <FolderOpen className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-            <div className="flex items-center space-x-1.5 min-w-0 truncate">
-              <span className="text-xs font-mono font-medium text-neutral-200 group-hover:text-amber-400 truncate">
-                {activeProject ? activeProject.name : "Select Project..."}
-              </span>
-              {activeProject && (
-                <span className="text-[8px] font-mono px-1 py-0.2 bg-neutral-800 text-neutral-400 border border-neutral-750 rounded uppercase shrink-0">
-                  {activeProject.project_type}
-                </span>
-              )}
-            </div>
-            <ChevronDown className="w-3 h-3 text-neutral-500 group-hover:text-neutral-300 shrink-0 ml-0.5" />
-          </button>
-
-          {/* Quick Project Actions */}
-          <div className="flex items-center space-x-1 shrink-0">
-            <button
-              onClick={onNewProject}
-              className="px-2 py-1 text-xs font-mono font-medium text-neutral-300 hover:text-white bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 hover:border-neutral-700 rounded transition flex items-center space-x-1"
-              title="Create New CAD Project"
-            >
-              <FolderPlus className="w-3 h-3 text-amber-500" />
-              <span className="hidden md:inline">New</span>
-            </button>
-            <button
-              onClick={onOpenProjectList}
-              className="px-2 py-1 text-xs font-mono font-medium text-neutral-400 hover:text-white bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded transition flex items-center space-x-1"
-              title="Browse Projects"
-            >
-              <FolderOpen className="w-3 h-3 text-neutral-400" />
-              <span className="hidden md:inline">Open</span>
-            </button>
-          </div>
+        <div className="leading-none">
+          <div className="text-sm font-bold tracking-[0.08em] text-neutral-100">Outlaw Forge</div>
+          <div className="mt-1 text-[8px] font-mono tracking-[0.16em] text-neutral-600">LOCAL WORKBENCH</div>
         </div>
       </div>
 
-      {/* Center: Command Toolbar */}
-      <div className="hidden lg:flex items-center space-x-2">
-        {/* Synchronized Status Pill */}
-        <div 
-          className={`flex items-center space-x-1 px-2 py-0.5 rounded border text-[10px] font-mono font-semibold transition-all ${saveIndicator.color}`}
-          title={saveStatus === "unsaved" ? "Unsaved changes exist. Click Save to persist." : "Workspace synchronized"}
-        >
-          {saveIndicator.icon}
-          <span>{saveIndicator.label}</span>
-        </div>
+      <nav className="hidden lg:flex h-full items-center px-3 gap-0.5 border-r border-neutral-800">
+        <button onClick={onOpenProjectList} className="top-menu-button">File</button>
+        <button onClick={onSaveProject} className="top-menu-button">Edit</button>
+        <button onClick={onAutoArrange} className="top-menu-button">View</button>
+        <button onClick={onImportClick} className="top-menu-button">Model</button>
+        <button onClick={onOpenCalibration} className="top-menu-button">Repair</button>
+        <button className="top-menu-button">Help</button>
+      </nav>
 
-        {/* Action Controls */}
-        <div className="flex items-center space-x-0.5 bg-neutral-900 border border-neutral-800 rounded p-0.5">
-          <button 
-            onClick={onImportClick}
-            className="px-2 py-0.5 text-xs font-mono text-neutral-300 hover:text-white hover:bg-neutral-800 rounded transition flex items-center space-x-1"
-            title="Import Mesh (STL, OBJ, 3MF, STEP)"
-          >
-            <FolderOpen className="w-3 h-3 text-amber-500" />
-            <span>Import</span>
+      <div className="flex-1 min-w-0 px-3 flex items-center gap-2">
+        <button
+          onClick={onOpenProjectList}
+          className="min-w-0 max-w-[270px] h-8 px-2.5 border border-neutral-800 bg-neutral-900/70 hover:border-neutral-700 flex items-center gap-2 rounded-sm transition-colors"
+          title="Open project manager"
+        >
+          <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+          <span className="truncate text-[11px] font-medium text-neutral-300">{projectLabel}</span>
+          <ChevronDown className="h-3 w-3 shrink-0 text-neutral-600" />
+        </button>
+
+        <div className="hidden xl:flex items-center gap-1">
+          <button onClick={onNewProject} className="header-icon-button" title="New project">
+            <FolderPlus className="h-3.5 w-3.5" />
           </button>
-          <button 
-            onClick={onOpenCalibration}
-            className="px-2 py-0.5 text-xs font-mono text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 rounded transition flex items-center space-x-1"
-            title="Open OrcaSlicer Calibration Suite"
-          >
-            <Sparkles className="w-3 h-3 text-amber-500" />
-            <span>Calibration</span>
+          <button onClick={onImportClick} className="header-icon-button" title="Import model">
+            <Upload className="h-3.5 w-3.5" />
           </button>
-          <button 
-            onClick={onAutoArrange}
-            className="px-2 py-0.5 text-xs font-mono text-neutral-300 hover:text-white hover:bg-neutral-800 rounded transition flex items-center space-x-1"
-            title="Auto-Arrange Models on Build Plate"
-          >
-            <Layers className="w-3 h-3 text-neutral-400" />
-            <span>Arrange</span>
+          <button onClick={onAutoArrange} className="header-icon-button" title="Auto-arrange build plate">
+            <Layers3 className="h-3.5 w-3.5" />
           </button>
-          <button 
+          <button onClick={onOpenCalibration} className="header-icon-button" title="Calibration tools">
+            <Sparkles className="h-3.5 w-3.5" />
+          </button>
+          <button
             onClick={onSaveProject}
             disabled={saveStatus === "saved" || saveStatus === "saving"}
-            className="px-2 py-0.5 text-xs font-mono text-neutral-300 hover:text-white hover:bg-neutral-800 disabled:opacity-40 disabled:hover:bg-transparent rounded transition flex items-center space-x-1"
-            title="Save Project State"
+            className="header-icon-button disabled:opacity-35"
+            title="Save project"
           >
-            <Save className={`w-3 h-3 ${saveStatus === "unsaved" ? "text-amber-500" : "text-neutral-500"}`} />
-            <span>Save</span>
+            <Save className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Right: Telemetry & Connection Status */}
-      <div className="flex items-center space-x-2 shrink-0">
-        {/* Backend Health Pill */}
-        <div 
-          className={`flex items-center space-x-1.5 px-2 py-0.5 rounded border text-[10px] font-mono font-medium transition-all ${healthStatus.color}`}
-          title={
-            health 
-              ? `Engine: ${health.services.mesh_engine} | DB: ${health.services.database} | Platform: ${health.system.platform}`
-              : healthError || "Backend offline"
-          }
-        >
-          <span className={`w-1.5 h-1.5 rounded-full ${healthStatus.dotColor}`} />
-          <span className="font-bold tracking-wide">
-            {healthStatus.label}
-          </span>
-          {healthStatus.icon}
+      <div className="h-full flex items-center shrink-0">
+        <div className="hidden md:flex h-full min-w-[190px] px-4 border-l border-neutral-800 items-center gap-2">
+          <Gauge className="h-3.5 w-3.5 text-neutral-500" />
+          <div className="min-w-0">
+            <div className="truncate text-[10px] font-medium text-neutral-300">
+              {activePrinter ? `${activePrinter.manufacturer} ${activePrinter.model}` : "No printer selected"}
+            </div>
+            <div className="mt-0.5 text-[8px] font-mono text-neutral-600">PRINTER PROFILE</div>
+          </div>
+          <ChevronDown className="ml-auto h-3 w-3 text-neutral-600" />
         </div>
-
-        {/* Engine Spec Indicator */}
-        <div className="hidden xl:flex items-center space-x-1 text-[10px] font-mono text-neutral-400 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded">
-          <Cpu className="w-3 h-3 text-amber-500" />
-          <span>GEO: {health?.services.mesh_engine === "ready" ? "ACTIVE" : "STANDBY"}</span>
+        <div className="hidden xl:flex h-full px-4 border-l border-neutral-800 items-center text-[10px] font-mono text-neutral-400">
+          {activePrinter?.nozzle_diameter_mm ?? 0.4} mm Nozzle
         </div>
-
-        <div className="h-4 w-[1px] bg-neutral-800" />
-
-        {/* Settings & Help */}
-        <button 
-          className="p-1 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded transition"
-          title="Workspace Settings"
-        >
-          <Settings className="w-3.5 h-3.5" />
-        </button>
-        <button 
-          className="p-1 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded transition"
-          title="Shortcuts and Docs"
-        >
-          <HelpCircle className="w-3.5 h-3.5" />
-        </button>
+        <div className="hidden xl:flex h-full px-4 border-l border-neutral-800 items-center gap-2 text-[10px] font-mono text-neutral-300">
+          PLA <ChevronDown className="h-3 w-3 text-neutral-600" />
+        </div>
+        <div className="h-full px-3 border-l border-neutral-800 flex items-center gap-2">
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${isHealthLoading ? "bg-amber-400 animate-pulse" : engineOnline ? "bg-emerald-400" : "bg-red-500"}`}
+            title={engineOnline ? "Geometry engine online" : healthError || "Geometry engine offline"}
+          />
+          <button className="header-icon-button" title="Settings"><Settings className="h-3.5 w-3.5" /></button>
+          <button className="header-icon-button" title="Help"><CircleHelp className="h-3.5 w-3.5" /></button>
+        </div>
       </div>
     </header>
   );

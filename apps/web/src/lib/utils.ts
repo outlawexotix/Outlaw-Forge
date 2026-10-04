@@ -14,6 +14,6 @@ export function formatBytes(bytes: number, decimals = 2): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
-export function formatNumber(num: number): string {
-  return new Intl.NumberFormat().format(num);
+export function formatNumber(num: number, maximumFractionDigits?: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits }).format(num);
 }

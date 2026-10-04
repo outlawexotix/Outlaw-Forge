@@ -279,11 +279,13 @@ export function Inspector({
         const estOverhangArea = Math.round((totalArea * (estOverhangPct / 100)) * 100) / 100;
         setOverhangData({
           model_id: mesh.id,
-          total_surface_area_cm2: totalArea,
-          overhang_surface_area_cm2: estOverhangArea,
+          critical_angle_deg: 45,
           overhang_percentage: estOverhangPct,
-          critical_threshold_deg: 45,
-          watertight: mesh.is_watertight,
+          overhang_area_cm2: estOverhangArea,
+          total_area_cm2: totalArea,
+          overhang_face_count: 0,
+          total_face_count: mesh.triangle_count,
+          requires_support: estOverhangPct > 0,
         });
       } finally {
         setIsLoadingOverhangs(false);
@@ -755,7 +757,7 @@ export function Inspector({
   };
 
   return (
-    <aside className="w-84 bg-neutral-950 border-l border-neutral-800 flex flex-col h-full text-neutral-200 select-none overflow-hidden">
+    <aside className="w-full bg-neutral-950 border-l border-neutral-800 flex flex-col h-full text-neutral-200 select-none overflow-hidden">
       {/* Model Selector / Scene Graph Bar */}
       {models && models.length > 0 && (
         <div className="p-2 border-b border-neutral-800 bg-neutral-900/60 flex items-center justify-between gap-1.5">
@@ -990,7 +992,7 @@ export function Inspector({
                 <div className="space-y-1.5 text-[11px]">
                   <div className="flex items-center justify-between text-slate-400">
                     <span>Critical Support Area</span>
-                    <span className="text-amber-300 font-semibold">{overhangData.overhang_surface_area_cm2} cm²</span>
+                    <span className="text-amber-300 font-semibold">{overhangData.overhang_area_cm2} cm²</span>
                   </div>
                   <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden border border-slate-800">
                     <div 

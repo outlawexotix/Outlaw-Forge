@@ -48,3 +48,5 @@ out/
 apps/web/out/
 src-tauri/target/
 
+# Local design review captures
+artifacts/design-qa/

@@ -210,11 +210,13 @@ export interface PrinterProfileCreatePayload {
 
 export interface OverhangAnalysis {
   model_id?: string;
-  total_surface_area_cm2: number;
-  overhang_surface_area_cm2: number;
+  critical_angle_deg: number;
   overhang_percentage: number;
-  critical_threshold_deg: number;
-  watertight: boolean;
+  overhang_area_cm2: number;
+  total_area_cm2: number;
+  overhang_face_count: number;
+  total_face_count: number;
+  requires_support: boolean;
 }
 
 export interface ExportModelPayload {
@@ -761,4 +763,3 @@ export interface RibReinforceResult {
   bounding_box_mm: Record<string, number>;
   working_model?: WorkingModel;
 }
-

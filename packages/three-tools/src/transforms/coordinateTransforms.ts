@@ -155,7 +155,9 @@ export function computeMeshMetrics(geometry: THREE.BufferGeometry): MeshMetrics 
 
   const index = geometry.getIndex();
   const vertexCount = positionAttr.count;
-  const triangleCount = index ? index.count / 3 : positionAttr.count / 3;
+  const expectedTriangleCount = Math.floor((index ? index.count : positionAttr.count) / 3);
+  let triangleCount = 0;
+  let invalidTriangleCount = 0;
 
   let totalAreaMm2 = 0;
   let totalSignedVolumeMm3 = 0;
@@ -178,7 +180,23 @@ export function computeMeshMetrics(geometry: THREE.BufferGeometry): MeshMetrics 
   };
 
   const quantizeVec = (v: THREE.Vector3): string => {
-    return `${v.x.toFixed(4)},${v.y.toFixed(4)},${v.z.toFixed(4)}`;
+    return `${Number(v.x).toFixed(4)},${Number(v.y).toFixed(4)},${Number(v.z).toFixed(4)}`;
+  };
+
+  const readVertex = (target: THREE.Vector3, vertexIndex: number): boolean => {
+    if (!Number.isInteger(vertexIndex) || vertexIndex < 0 || vertexIndex >= positionAttr.count) {
+      return false;
+    }
+
+    const x = Number(positionAttr.getX(vertexIndex));
+    const y = Number(positionAttr.getY(vertexIndex));
+    const z = Number(positionAttr.getZ(vertexIndex));
+    if (![x, y, z].every(Number.isFinite)) {
+      return false;
+    }
+
+    target.set(x, y, z);
+    return true;
   };
 
   const processTriangle = (v1: THREE.Vector3, v2: THREE.Vector3, v3: THREE.Vector3) => {
@@ -202,22 +220,31 @@ export function computeMeshMetrics(geometry: THREE.BufferGeometry): MeshMetrics 
 
   if (index) {
     for (let i = 0; i < index.count; i += 3) {
-      p1.fromBufferAttribute(positionAttr, index.getX(i));
-      p2.fromBufferAttribute(positionAttr, index.getX(i + 1));
-      p3.fromBufferAttribute(positionAttr, index.getX(i + 2));
+      const valid =
+        readVertex(p1, Number(index.getX(i))) &&
+        readVertex(p2, Number(index.getX(i + 1))) &&
+        readVertex(p3, Number(index.getX(i + 2)));
+      if (!valid) {
+        invalidTriangleCount += 1;
+        continue;
+      }
       processTriangle(p1, p2, p3);
+      triangleCount += 1;
     }
   } else {
-    for (let i = 0; i < positionAttr.count; i += 3) {
-      p1.fromBufferAttribute(positionAttr, i);
-      p2.fromBufferAttribute(positionAttr, i + 1);
-      p3.fromBufferAttribute(positionAttr, i + 2);
+    for (let i = 0; i < expectedTriangleCount * 3; i += 3) {
+      const valid = readVertex(p1, i) && readVertex(p2, i + 1) && readVertex(p3, i + 2);
+      if (!valid) {
+        invalidTriangleCount += 1;
+        continue;
+      }
       processTriangle(p1, p2, p3);
+      triangleCount += 1;
     }
   }
 
   // Check watertightness: every edge must have an exact count of 2
-  let isWatertight = triangleCount > 0;
+  let isWatertight = triangleCount > 0 && invalidTriangleCount === 0;
   for (const count of edgeCountMap.values()) {
     if (count !== 2) {
       isWatertight = false;
@@ -324,4 +351,3 @@ export function computeOverhangMetrics(
     criticalThresholdDeg: thresholdDeg,
   };
 }
-

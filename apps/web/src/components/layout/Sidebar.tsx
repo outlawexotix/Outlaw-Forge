@@ -98,12 +98,9 @@ export function Sidebar({
   onToggleBed,
 }: SidebarProps) {
   return (
-    <aside className="w-14 bg-neutral-950 border-r border-neutral-800 flex flex-col items-center py-2 justify-between z-40 select-none">
+    <aside className="w-[78px] shrink-0 bg-[#0b0d10] border-r border-neutral-800 flex flex-col items-center py-2 justify-between z-40 select-none">
       {/* CAD Transformation Tools */}
-      <div className="flex flex-col items-center space-y-1.5 w-full px-1.5">
-        <div className="text-[8px] font-mono font-bold text-neutral-500 uppercase tracking-widest mb-0.5">
-          CAD
-        </div>
+      <div className="flex flex-col items-center space-y-1 w-full px-1.5">
         {TOOLS.map((tool) => {
           const Icon = tool.icon;
           const isActive = activeTool === tool.id;
@@ -113,25 +110,25 @@ export function Sidebar({
               key={tool.id}
               onClick={() => onSelectTool(tool.id)}
               title={`${tool.label} [${tool.hotkey}] - ${tool.description}`}
-              className={`relative group w-11 h-10 rounded flex flex-col items-center justify-center transition-all ${
+              className={`relative group w-full h-[54px] rounded-sm flex flex-col items-center justify-center transition-all ${
                 isActive
-                  ? "bg-amber-500/10 text-amber-400 border border-amber-500/50"
+                  ? "bg-amber-500/10 text-amber-400 border border-amber-500/70"
                   : "text-neutral-400 hover:text-neutral-100 hover:bg-neutral-900 border border-transparent"
               }`}
             >
-              <Icon className={`w-4 h-4 ${isActive ? "stroke-[2.2] text-amber-400" : "stroke-[1.8]"}`} />
-              <span className="text-[8px] font-mono mt-0.5 leading-none">
-                {tool.label.slice(0, 4)}
+              <Icon className={`w-[18px] h-[18px] ${isActive ? "stroke-[2.2] text-amber-400" : "stroke-[1.7]"}`} />
+              <span className="text-[9px] font-medium mt-1 leading-none">
+                {tool.label}
               </span>
 
               {/* Hotkey badge */}
-              <span className="absolute top-0.5 right-1 text-[7px] font-mono text-neutral-500 group-hover:text-neutral-300">
+              <span className="absolute top-1 right-1.5 text-[7px] font-mono text-neutral-600 group-hover:text-neutral-300">
                 {tool.hotkey}
               </span>
 
               {/* Active indicator bar */}
               {isActive && (
-                <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] bg-amber-500 rounded-r" />
+                <div className="absolute left-0 top-2 bottom-2 w-[2px] bg-amber-500" />
               )}
             </button>
           );
@@ -140,15 +137,12 @@ export function Sidebar({
 
       {/* Viewport Toggles */}
       <div className="flex flex-col items-center space-y-1 w-full px-1.5 pt-2 border-t border-neutral-800">
-        <div className="text-[8px] font-mono font-bold text-neutral-500 uppercase tracking-widest mb-0.5">
-          VIEW
-        </div>
 
         {/* Snap to grid */}
         <button
           onClick={onToggleSnap}
           title={`Snap to Grid (${snapToGrid ? "ON" : "OFF"})`}
-          className={`w-11 h-8 rounded flex flex-col items-center justify-center transition-all ${
+          className={`w-full h-9 rounded-sm flex flex-col items-center justify-center transition-all ${
             snapToGrid
               ? "bg-amber-500/10 text-amber-400 border border-amber-500/40"
               : "text-neutral-500 hover:text-neutral-300 hover:bg-neutral-900"
@@ -162,7 +156,7 @@ export function Sidebar({
         <button
           onClick={onToggleWireframe}
           title={`Wireframe Overlay (${showWireframe ? "ON" : "OFF"})`}
-          className={`w-11 h-8 rounded flex flex-col items-center justify-center transition-all ${
+          className={`w-full h-9 rounded-sm flex flex-col items-center justify-center transition-all ${
             showWireframe
               ? "bg-neutral-800 text-neutral-200 border border-neutral-700"
               : "text-neutral-500 hover:text-neutral-300 hover:bg-neutral-900"
@@ -176,7 +170,7 @@ export function Sidebar({
         <button
           onClick={onToggleBed}
           title={`Print Bed Boundary (${showBed ? "ON" : "OFF"})`}
-          className={`w-11 h-8 rounded flex flex-col items-center justify-center transition-all ${
+          className={`w-full h-9 rounded-sm flex flex-col items-center justify-center transition-all ${
             showBed
               ? "bg-neutral-800 text-neutral-200 border border-neutral-700"
               : "text-neutral-500 hover:text-neutral-300 hover:bg-neutral-900"
