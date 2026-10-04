@@ -38,6 +38,8 @@ OperationType = Literal[
     "MASK_STRAP_SLOT",
     "FIGURE_PLINTH_GENERATE",
     "FIGURE_KEY_PEG",
+    "INFILL_GENERATE",
+    "RIB_REINFORCE",
 ]
 
 

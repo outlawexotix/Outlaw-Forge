@@ -38,6 +38,10 @@ import {
   IslandAnalysisResult,
   CostEstimationPayload,
   CostEstimationResult,
+  InfillGeneratePayload,
+  InfillGenerateResult,
+  RibReinforcePayload,
+  RibReinforceResult,
 } from "@shared/types/api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -663,6 +667,38 @@ export class ApiClient {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || "Failed to analyze floating islands");
+    }
+    return res.json();
+  }
+
+  /**
+   * Phase 10: Generate procedural 3D infill lattice (Gyroid, Honeycomb, Rectilinear, Cubic)
+   */
+  async generateInfill(projectId: string, modelId: string, payload: InfillGeneratePayload): Promise<InfillGenerateResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/infill`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to generate infill");
+    }
+    return res.json();
+  }
+
+  /**
+   * Phase 10: Reinforce hollow walls with structural ribs and continuous drainage channels
+   */
+  async reinforceRibs(projectId: string, modelId: string, payload: RibReinforcePayload): Promise<RibReinforceResult> {
+    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/reinforce_ribs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to reinforce ribs");
     }
     return res.json();
   }

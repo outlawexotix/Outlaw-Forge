@@ -108,7 +108,9 @@ export type OperationType =
   | 'MASK_MAGNET_PUNCH'
   | 'MASK_STRAP_SLOT'
   | 'FIGURE_PLINTH_GENERATE'
-  | 'FIGURE_KEY_PEG';
+  | 'FIGURE_KEY_PEG'
+  | 'INFILL_GENERATE'
+  | 'RIB_REINFORCE';
 
 export interface OperationRecord {
   id: string;
@@ -713,8 +715,50 @@ export interface CostEstimationResult {
   material_type: string;
 }
 
+export type InfillPattern = 'gyroid' | 'honeycomb' | 'rectilinear' | 'cubic';
 
+export interface InfillGeneratePayload {
+  pattern?: InfillPattern;
+  density?: number;
+  unit_cell_size_mm?: number;
+  wall_thickness_mm?: number;
+  hollow_first?: boolean;
+}
 
+export interface InfillGenerateResult {
+  success: boolean;
+  model_id: string;
+  infill_pattern: InfillPattern;
+  density: number;
+  unit_cell_size_mm: number;
+  wall_thickness_mm: number;
+  volume_reduction_percent: number;
+  vertex_count: number;
+  triangle_count: number;
+  bounding_box_mm: Record<string, number>;
+  mesh_path: string;
+  working_model?: WorkingModel;
+}
 
+export interface RibReinforcePayload {
+  rib_thickness_mm?: number;
+  rib_spacing_mm?: number;
+  rib_height_mm?: number;
+  drainage_hole_radius_mm?: number;
+  add_drainage_channel?: boolean;
+  drainage_axis?: 'x' | 'y' | 'z';
+  wall_thickness_mm?: number;
+}
 
+export interface RibReinforceResult {
+  success: boolean;
+  model_id: string;
+  rib_count: number;
+  drainage_holes_count: number;
+  vertex_count: number;
+  triangle_count: number;
+  mesh_path: string;
+  bounding_box_mm: Record<string, number>;
+  working_model?: WorkingModel;
+}
 

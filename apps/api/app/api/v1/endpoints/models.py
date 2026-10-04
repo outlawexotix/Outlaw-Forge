@@ -19,11 +19,15 @@ from app.models.mesh import (
     ExportProject3MFResponse,
     HollowModelPayload,
     HollowModelResult,
+    InfillGeneratePayload,
+    InfillGenerateResult,
     IslandAnalysisPayload,
     IslandAnalysisResult,
     OverhangAnalysisResult,
     RepairModelPayload,
     RepairModelResult,
+    RibReinforcePayload,
+    RibReinforceResult,
     RotateModelPayload,
     ScaleModelPayload,
     SliceModelPayload,
@@ -39,6 +43,7 @@ from app.models.project import (
 )
 from app.repositories.printer_repo import PrinterRepository
 from app.repositories.project_repo import ProjectRepository
+from app.services.infill_service import infill_service
 from app.services.mesh_service import mesh_service
 from app.services.printability_service import printability_service
 from app.services.storage import storage_service
@@ -1126,6 +1131,238 @@ async def hollow_model(
         drain_holes_added=drain_holes_count,
         volume_saved_cm3=volume_saved,
         message=f"Model successfully hollowed with {opts.wall_thickness_mm}mm wall thickness",
+    )
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/infill",
+    response_model=InfillGenerateResult,
+    summary="Generate 3D lattice infill for model",
+)
+@router.post(
+    "/models/{model_id}/infill",
+    response_model=InfillGenerateResult,
+    summary="Generate 3D lattice infill direct",
+)
+async def generate_infill(
+    model_id: str,
+    payload: Optional[InfillGeneratePayload] = None,
+    project_id: Optional[str] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+) -> InfillGenerateResult:
+    """
+    Generate volumetric procedural 3D infill lattice (Gyroid, Honeycomb, Rectilinear, Cubic)
+    inside solid or hollowed 3D model geometry.
+    Saves the derived model revision to data/working/, updates the project state,
+    and logs the INFILL_GENERATE operation.
+    """
+    if project_id:
+        model = await project_repo.get_working_model_for_project(project_id, model_id)
+    else:
+        model = await project_repo.get_working_model(model_id)
+
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found",
+        )
+
+    resolved_path = storage_service.resolve_path(model.storage_path)
+    mesh = mesh_service.load_mesh(resolved_path)
+
+    opts = payload or InfillGeneratePayload()
+    infilled_mesh, volume_reduction = infill_service.generate_infill(
+        mesh=mesh,
+        pattern=opts.pattern,
+        density=opts.density,
+        unit_cell_size_mm=opts.unit_cell_size_mm,
+        wall_thickness_mm=opts.wall_thickness_mm,
+        hollow_first=opts.hollow_first,
+    )
+
+    analysis = mesh_service.analyze_mesh(infilled_mesh)
+
+    pattern_val = opts.pattern.value if hasattr(opts.pattern, "value") else str(opts.pattern)
+    infill_filename = f"infill_{pattern_val}_{model.filename}"
+    file_uuid = uuid.uuid4().hex[:12]
+    new_working_filename = f"{file_uuid}_{storage_service.sanitize_filename(infill_filename)}"
+    new_working_path = (storage_service.working_dir / new_working_filename).resolve()
+    storage_service.validate_safe_path(new_working_path)
+
+    mesh_service.export_mesh(infilled_mesh, new_working_path, format=model.file_format)
+    relative_storage_path = f"working/{new_working_filename}"
+
+    updated_model = await project_repo.update_working_model(
+        model_id=model_id,
+        storage_path=relative_storage_path,
+        bounds=analysis.bounds,
+        triangle_count=analysis.triangle_count,
+        vertex_count=analysis.vertex_count,
+        surface_area_cm2=analysis.surface_area_cm2,
+        volume_cm3=analysis.volume_cm3,
+        is_watertight=analysis.is_watertight,
+        transform=model.transform,
+    )
+
+    if not updated_model:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update infilled model in database.",
+        )
+
+    await project_repo.record_operation(
+        project_id=model.project_id,
+        model_id=model_id,
+        operation_type="INFILL_GENERATE",
+        parameters=opts.model_dump(),
+        user_summary=f"Generated {pattern_val} infill ({opts.density*100:.1f}% density, {opts.unit_cell_size_mm}mm spacing) with {volume_reduction:.1f}% volume reduction",
+        resulting_state_ref=model_id,
+        success=True,
+    )
+
+    b_min = list(analysis.bounds.min)
+    b_max = list(analysis.bounds.max)
+    b_dims = list(analysis.bounds.dimensions_mm)
+    bounds_dict = {
+        "min_x": float(b_min[0]),
+        "max_x": float(b_max[0]),
+        "min_y": float(b_min[1]),
+        "max_y": float(b_max[1]),
+        "min_z": float(b_min[2]),
+        "max_z": float(b_max[2]),
+        "width_mm": float(b_dims[0]),
+        "depth_mm": float(b_dims[1]),
+        "height_mm": float(b_dims[2]),
+    }
+
+    return InfillGenerateResult(
+        success=True,
+        model_id=model_id,
+        infill_pattern=opts.pattern,
+        density=opts.density,
+        unit_cell_size_mm=opts.unit_cell_size_mm,
+        wall_thickness_mm=opts.wall_thickness_mm,
+        volume_reduction_percent=volume_reduction,
+        vertex_count=analysis.vertex_count,
+        triangle_count=analysis.triangle_count,
+        bounding_box_mm=bounds_dict,
+        mesh_path=relative_storage_path,
+        working_model=updated_model,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/models/{model_id}/reinforce_ribs",
+    response_model=RibReinforceResult,
+    summary="Reinforce hollow interior walls with structural ribs and continuous drainage channels",
+)
+@router.post(
+    "/models/{model_id}/reinforce_ribs",
+    response_model=RibReinforceResult,
+    summary="Reinforce hollow interior walls with structural ribs and continuous drainage channels direct",
+)
+async def reinforce_ribs_endpoint(
+    model_id: str,
+    project_id: Optional[str] = None,
+    payload: Optional[RibReinforcePayload] = None,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+) -> RibReinforceResult:
+    """
+    Generate parametric internal structural rib reinforcement along hollow interior walls
+    to prevent print buckling, and continuous drainage channels to eliminate trapped resin or air pockets.
+    Saves the derived model revision to data/working/, updates the project state,
+    and logs the RIB_REINFORCE operation.
+    """
+    if project_id:
+        model = await project_repo.get_working_model_for_project(project_id, model_id)
+    else:
+        model = await project_repo.get_working_model(model_id)
+
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_id}' not found",
+        )
+
+    resolved_path = storage_service.resolve_path(model.storage_path)
+    mesh = mesh_service.load_mesh(resolved_path)
+
+    opts = payload or RibReinforcePayload()
+    reinforced_mesh, rib_count, holes_count = infill_service.reinforce_internal_ribs(
+        mesh=mesh,
+        rib_thickness_mm=opts.rib_thickness_mm,
+        rib_spacing_mm=opts.rib_spacing_mm,
+        rib_height_mm=opts.rib_height_mm,
+        drainage_hole_radius_mm=opts.drainage_hole_radius_mm,
+        add_drainage_channel=opts.add_drainage_channel,
+        drainage_axis=opts.drainage_axis,
+        wall_thickness_mm=opts.wall_thickness_mm,
+    )
+
+    analysis = mesh_service.analyze_mesh(reinforced_mesh)
+
+    rib_filename = f"ribs_{model.filename}"
+    file_uuid = uuid.uuid4().hex[:12]
+    new_working_filename = f"{file_uuid}_{storage_service.sanitize_filename(rib_filename)}"
+    new_working_path = (storage_service.working_dir / new_working_filename).resolve()
+    storage_service.validate_safe_path(new_working_path)
+
+    mesh_service.export_mesh(reinforced_mesh, new_working_path, format=model.file_format)
+    relative_storage_path = f"working/{new_working_filename}"
+
+    updated_model = await project_repo.update_working_model(
+        model_id=model_id,
+        storage_path=relative_storage_path,
+        bounds=analysis.bounds,
+        triangle_count=analysis.triangle_count,
+        vertex_count=analysis.vertex_count,
+        surface_area_cm2=analysis.surface_area_cm2,
+        volume_cm3=analysis.volume_cm3,
+        is_watertight=analysis.is_watertight,
+        transform=model.transform,
+    )
+
+    if not updated_model:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update rib-reinforced model in database.",
+        )
+
+    await project_repo.record_operation(
+        project_id=model.project_id,
+        model_id=model_id,
+        operation_type="RIB_REINFORCE",
+        parameters=opts.model_dump(),
+        user_summary=f"Reinforced internal shell with {rib_count} structural ribs ({opts.rib_thickness_mm}mm thick) and {holes_count} drainage holes",
+        resulting_state_ref=model_id,
+        success=True,
+    )
+
+    b_min = list(analysis.bounds.min)
+    b_max = list(analysis.bounds.max)
+    b_dims = list(analysis.bounds.dimensions_mm)
+    bounds_dict = {
+        "min_x": float(b_min[0]),
+        "max_x": float(b_max[0]),
+        "min_y": float(b_min[1]),
+        "max_y": float(b_max[1]),
+        "min_z": float(b_min[2]),
+        "max_z": float(b_max[2]),
+        "width_mm": float(b_dims[0]),
+        "depth_mm": float(b_dims[1]),
+        "height_mm": float(b_dims[2]),
+    }
+
+    return RibReinforceResult(
+        success=True,
+        model_id=model_id,
+        rib_count=rib_count,
+        drainage_holes_count=holes_count,
+        vertex_count=analysis.vertex_count,
+        triangle_count=analysis.triangle_count,
+        mesh_path=relative_storage_path,
+        bounding_box_mm=bounds_dict,
+        working_model=updated_model,
     )
 
 

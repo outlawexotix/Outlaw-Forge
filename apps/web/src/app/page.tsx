@@ -25,9 +25,9 @@ const ViewportContainer = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="w-full h-full flex flex-col items-center justify-center bg-[#090d16] text-slate-400 font-mono text-xs">
-        <div className="w-8 h-8 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin mb-3" />
-        <span className="text-cyan-300">Initializing 3D Viewport Engine...</span>
+      <div className="w-full h-full flex flex-col items-center justify-center bg-neutral-950 text-neutral-400 font-mono text-xs">
+        <div className="w-8 h-8 border-2 border-amber-500 border-t-transparent rounded-full animate-spin mb-3" />
+        <span className="text-amber-400 font-medium">INITIALIZING 3D VIEWPORT ENGINE...</span>
       </div>
     ),
   }
@@ -506,7 +506,7 @@ export default function WorkbenchPage() {
         />
 
         {/* Central 3D Viewport Area */}
-        <main className="flex-1 relative flex flex-col items-center justify-center bg-[#090d16] overflow-hidden">
+        <main className="flex-1 relative flex flex-col items-center justify-center bg-neutral-950 overflow-hidden">
           <ViewportContainer
             printer={activePrinter}
             model={activeWorkingModel}

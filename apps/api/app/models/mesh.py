@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -400,5 +401,62 @@ class CostEstimationResult(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="allow")
 
 
+class InfillPattern(str, Enum):
+    GYROID = "gyroid"
+    HONEYCOMB = "honeycomb"
+    RECTILINEAR = "rectilinear"
+    CUBIC = "cubic"
 
+
+class InfillGeneratePayload(BaseModel):
+    pattern: InfillPattern = InfillPattern.GYROID
+    density: float = Field(default=0.20, ge=0.05, le=1.0, description="Infill density fraction (0.05 to 1.0)")
+    unit_cell_size_mm: float = Field(default=10.0, gt=0.0, description="Unit cell repetition pitch in mm")
+    wall_thickness_mm: float = Field(default=2.0, gt=0.0, description="Outer perimeter shell wall thickness in mm")
+    hollow_first: bool = Field(default=True, description="Whether to retain solid shell and hollow interior before infilling")
+
+    model_config = ConfigDict(extra="allow")
+
+
+class InfillGenerateResult(BaseModel):
+    success: bool
+    model_id: str
+    infill_pattern: InfillPattern
+    density: float
+    unit_cell_size_mm: float
+    wall_thickness_mm: float
+    volume_reduction_percent: float
+    vertex_count: int
+    triangle_count: int
+    bounding_box_mm: Dict[str, float]
+    mesh_path: str
+    working_model: Optional[WorkingModel] = None
+
+    model_config = ConfigDict(from_attributes=True, extra="allow")
+
+
+class RibReinforcePayload(BaseModel):
+    rib_thickness_mm: float = Field(default=1.5, ge=0.4, le=10.0, description="Thickness of internal reinforcing rib walls in mm")
+    rib_spacing_mm: float = Field(default=12.0, ge=2.0, le=50.0, description="Spacing between parallel reinforcement ribs in mm")
+    rib_height_mm: float = Field(default=3.0, ge=0.5, le=50.0, description="Depth/height of rib protrusion in mm")
+    drainage_hole_radius_mm: float = Field(default=2.0, ge=0.5, le=20.0, description="Radius of resin drainage channel hole in mm")
+    add_drainage_channel: bool = Field(default=True, description="Whether to punch continuous drainage holes for resin escape")
+    drainage_axis: Literal["x", "y", "z"] = Field(default="z", description="Primary axis for continuous resin drainage hole")
+    wall_thickness_mm: float = Field(default=2.0, ge=0.5, le=10.0, description="Shell wall thickness if starting from solid mesh in mm")
+
+    model_config = ConfigDict(extra="allow")
+
+
+class RibReinforceResult(BaseModel):
+    success: bool
+    model_id: str
+    rib_count: int
+    drainage_holes_count: int
+    vertex_count: int
+    triangle_count: int
+    mesh_path: str
+    bounding_box_mm: Dict[str, float]
+    working_model: Optional[WorkingModel] = None
+
+    model_config = ConfigDict(from_attributes=True, extra="allow")
 
