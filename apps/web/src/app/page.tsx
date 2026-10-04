@@ -297,6 +297,22 @@ export default function WorkbenchPage() {
     setSaveStatus("saved");
   };
 
+  // Handle Direct Model Import (e.g. Viewport Drag and Drop)
+  const handleModelImport = async (file: File) => {
+    if (!activeProject) {
+      alert("Please select or create a project before importing 3D models.");
+      return;
+    }
+    try {
+      const imported = await apiClient.importModel(activeProject.id, file);
+      handleModelImported(imported);
+    } catch (err: unknown) {
+      console.error("Model import failed:", err);
+      const msg = err instanceof Error ? err.message : "Failed to import model.";
+      alert(msg);
+    }
+  };
+
   // Handle Model Updated (Scale, etc.)
   const handleModelUpdated = (updatedModel: WorkingModel) => {
     if (!activeProject) return;
@@ -523,6 +539,7 @@ export default function WorkbenchPage() {
             onMirrorModel={handleViewportMirror}
             onTransformChange={handleViewportTransformChange}
             onCursorCoordinates={(coords: { x: number; y: number; z: number }) => setCursorCoords(coords)}
+            onDropFile={(file) => handleModelImport(file)}
             className="w-full h-full"
           />
         </main>

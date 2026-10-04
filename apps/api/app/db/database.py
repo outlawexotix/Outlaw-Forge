@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -25,13 +26,28 @@ def get_db_path(custom_path: Optional[str] = None) -> Path:
     path_str = custom_path or os.getenv("SQLITE_DB_PATH", settings.SQLITE_DB_PATH)
     path = Path(path_str)
     if not path.is_absolute():
-        curr = Path(__file__).resolve().parent
-        while curr.parent != curr:
-            if (curr / "apps").exists() and (curr / "packages").exists():
-                break
-            curr = curr.parent
-        repo_root = curr
-        path = (repo_root / path).resolve()
+        if getattr(sys, "frozen", False):
+            if sys.platform == "win32":
+                appdata = os.environ.get("APPDATA")
+                if not appdata:
+                    appdata = str(Path.home() / "AppData" / "Roaming")
+                appdata_base = Path(appdata) / "OutlawForge"
+            elif sys.platform == "darwin":
+                appdata_base = Path.home() / "Library" / "Application Support" / "OutlawForge"
+            else:
+                xdg = os.environ.get("XDG_DATA_HOME")
+                if not xdg:
+                    xdg = str(Path.home() / ".local" / "share")
+                appdata_base = Path(xdg) / "outlaw-forge"
+            path = (appdata_base / path).resolve()
+        else:
+            curr = Path(__file__).resolve().parent
+            while curr.parent != curr:
+                if (curr / "apps").exists() and (curr / "packages").exists():
+                    break
+                curr = curr.parent
+            repo_root = curr
+            path = (repo_root / path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

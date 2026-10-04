@@ -1,4 +1,7 @@
+import os
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,6 +15,20 @@ from app.db.database import ensure_db_initialized
 async def lifespan(app: FastAPI):
     # Fail startup before serving requests if the schema cannot be initialized.
     await ensure_db_initialized()
+
+    bound_port = getattr(app.state, "port", None) or os.environ.get("PORT", "8000")
+
+    handshake_file = os.environ.get("HANDSHAKE_FILE")
+    if handshake_file:
+        try:
+            with open(handshake_file, "w", encoding="utf-8") as f:
+                f.write(f'{{"status": "healthy", "port": {bound_port}}}\n')
+        except OSError:
+            pass
+
+    sys.stdout.write(f"HEALTH_OK: PORT={bound_port}\n")
+    sys.stdout.flush()
+
     yield
 
 
@@ -60,3 +77,13 @@ async def root():
         "projects_url": "/projects",
         "printers_url": "/printers",
     }
+
+
+if __name__ == "__main__":
+    _api_dir = Path(__file__).resolve().parent.parent
+    if str(_api_dir) not in sys.path:
+        sys.path.insert(0, str(_api_dir))
+
+    from app.cli import main
+
+    main()

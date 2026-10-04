@@ -18,6 +18,7 @@ import {
 } from '@three-tools';
 import { LayOnFaceTool } from './LayOnFaceTool';
 import { ModelDimensionTags } from './ModelDimensionTags';
+import { apiClient } from '@/lib/api-client';
 
 export type CADTool = 'select' | 'move' | 'rotate' | 'scale' | 'slice' | 'inspect' | 'lay_flat';
 export type RenderMode = 'solid' | 'overhangs' | 'layer_lines' | 'cross_section' | 'wireframe';
@@ -222,7 +223,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
 
       try {
         let loadedGeom: THREE.BufferGeometry | null = null;
-        const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        const apiBaseUrl = apiClient.getBaseUrl();
 
         if (modelBuffer && modelBuffer.byteLength > 0) {
           const filename = model?.filename || 'model.stl';

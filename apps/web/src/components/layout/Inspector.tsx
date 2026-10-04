@@ -2425,7 +2425,7 @@ export function Inspector({
                   <span>Model exported successfully!</span>
                 </p>
                 <a
-                  href={`http://localhost:8000${exportDownloadUrl}`}
+                  href={apiClient.getDownloadUrl(exportDownloadUrl)}
                   download
                   className="block text-center py-1.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded text-xs transition"
                 >
@@ -2481,7 +2481,7 @@ export function Inspector({
                     <span>3MF Project Container Ready ({export3MFResult.models_exported} models, {(export3MFResult.file_size_bytes / 1024).toFixed(1)} KB)</span>
                   </p>
                   <a
-                    href={`http://localhost:8000${export3MFResult.download_url}`}
+                    href={apiClient.getDownloadUrl(export3MFResult.download_url)}
                     download
                     className="block text-center py-1.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded text-xs transition"
                   >

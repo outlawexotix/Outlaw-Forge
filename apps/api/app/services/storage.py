@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import uuid
 from pathlib import Path
 from typing import Optional, Set, Tuple, Union
@@ -16,16 +17,32 @@ class StorageService:
         if base_dir:
             self.base_dir = Path(base_dir).resolve()
         else:
-            configured_dir = Path(settings.STORAGE_BASE_DIR)
+            raw_dir = os.getenv("STORAGE_BASE_DIR") or settings.STORAGE_BASE_DIR
+            configured_dir = Path(raw_dir)
             if not configured_dir.is_absolute():
-                # Walk up to find root containing 'apps' or 'packages'
-                curr = Path(__file__).resolve().parent
-                while curr.parent != curr:
-                    if (curr / "apps").exists() and (curr / "packages").exists():
-                        break
-                    curr = curr.parent
-                repo_root = curr
-                self.base_dir = (repo_root / configured_dir).resolve()
+                if getattr(sys, "frozen", False):
+                    if sys.platform == "win32":
+                        appdata = os.environ.get("APPDATA")
+                        if not appdata:
+                            appdata = str(Path.home() / "AppData" / "Roaming")
+                        appdata_base = Path(appdata) / "OutlawForge"
+                    elif sys.platform == "darwin":
+                        appdata_base = Path.home() / "Library" / "Application Support" / "OutlawForge"
+                    else:
+                        xdg = os.environ.get("XDG_DATA_HOME")
+                        if not xdg:
+                            xdg = str(Path.home() / ".local" / "share")
+                        appdata_base = Path(xdg) / "outlaw-forge"
+                    self.base_dir = (appdata_base / configured_dir).resolve()
+                else:
+                    # Walk up to find root containing 'apps' or 'packages'
+                    curr = Path(__file__).resolve().parent
+                    while curr.parent != curr:
+                        if (curr / "apps").exists() and (curr / "packages").exists():
+                            break
+                        curr = curr.parent
+                    repo_root = curr
+                    self.base_dir = (repo_root / configured_dir).resolve()
             else:
                 self.base_dir = configured_dir.resolve()
 

@@ -44,3 +44,7 @@ data/exports/
 apps/data/original/
 apps/data/working/
 apps/data/exports/
+out/
+apps/web/out/
+src-tauri/target/
+

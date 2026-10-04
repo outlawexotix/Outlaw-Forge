@@ -44,20 +44,56 @@ import {
   RibReinforceResult,
 } from "@shared/types/api";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+declare global {
+  interface Window {
+    __OUTLAW_FORGE_API_URL__?: string;
+  }
+}
 
 export class ApiClient {
-  private baseUrl: string;
+  private customBaseUrl: string | null = null;
 
-  constructor(baseUrl: string = API_BASE_URL) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
+  constructor(baseUrl?: string) {
+    if (baseUrl) {
+      this.customBaseUrl = baseUrl.replace(/\/$/, "");
+    }
+  }
+
+  public setBaseUrl(url: string): void {
+    this.customBaseUrl = url.replace(/\/$/, "");
+  }
+
+  public getBaseUrl(): string {
+    if (this.customBaseUrl) {
+      return this.customBaseUrl;
+    }
+    if (typeof window !== "undefined") {
+      if (window.__OUTLAW_FORGE_API_URL__) {
+        return window.__OUTLAW_FORGE_API_URL__.replace(/\/$/, "");
+      }
+      try {
+        const stored = localStorage.getItem("outlaw_forge_api_url");
+        if (stored) {
+          return stored.replace(/\/$/, "");
+        }
+      } catch {
+        // Ignore localStorage access restrictions
+      }
+    }
+    return (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+  }
+
+  public getDownloadUrl(relativePath: string): string {
+    const base = this.getBaseUrl();
+    const clean = relativePath.startsWith("/") ? relativePath : `/${relativePath}`;
+    return `${base}${clean}`;
   }
 
   /**
    * Check backend health status
    */
   async getHealth(signal?: AbortSignal): Promise<HealthStatusResponse> {
-    const res = await fetch(`${this.baseUrl}/health`, {
+    const res = await fetch(`${this.getBaseUrl()}/health`, {
       method: "GET",
       headers: {
         "Accept": "application/json",
@@ -80,7 +116,7 @@ export class ApiClient {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const res = await fetch(`${this.baseUrl}/projects`, {
+      const res = await fetch(`${this.getBaseUrl()}/projects`, {
         method: "GET",
         headers: { "Accept": "application/json" },
         cache: "no-store",
@@ -105,7 +141,7 @@ export class ApiClient {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const res = await fetch(`${this.baseUrl}/projects`, {
+      const res = await fetch(`${this.getBaseUrl()}/projects`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Accept": "application/json" },
         body: JSON.stringify(payload),
@@ -130,7 +166,7 @@ export class ApiClient {
    * Get project by ID
    */
   async getProject(id: string): Promise<Project> {
-    const res = await fetch(`${this.baseUrl}/projects/${id}`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${id}`, {
       method: "GET",
       headers: { "Accept": "application/json" },
       cache: "no-store",
@@ -143,7 +179,7 @@ export class ApiClient {
    * Update project metadata
    */
   async updateProject(id: string, payload: ProjectUpdatePayload): Promise<Project> {
-    const res = await fetch(`${this.baseUrl}/projects/${id}`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -156,7 +192,7 @@ export class ApiClient {
    * Delete project by ID
    */
   async deleteProject(id: string): Promise<{ success: boolean; id: string }> {
-    const res = await fetch(`${this.baseUrl}/projects/${id}`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${id}`, {
       method: "DELETE",
       headers: { "Accept": "application/json" },
     });
@@ -171,7 +207,7 @@ export class ApiClient {
     const formData = new FormData();
     formData.append("file", file);
 
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/import`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/import`, {
       method: "POST",
       headers: { "Accept": "application/json" },
       body: formData,
@@ -187,7 +223,7 @@ export class ApiClient {
    * List available printer profiles
    */
   async listPrinters(): Promise<PrinterProfile[]> {
-    const res = await fetch(`${this.baseUrl}/printers`, {
+    const res = await fetch(`${this.getBaseUrl()}/printers`, {
       method: "GET",
       headers: { "Accept": "application/json" },
       cache: "no-store",
@@ -200,7 +236,7 @@ export class ApiClient {
    * Create a new custom printer profile
    */
   async createPrinter(payload: PrinterProfileCreatePayload): Promise<PrinterProfile> {
-    const res = await fetch(`${this.baseUrl}/printers`, {
+    const res = await fetch(`${this.getBaseUrl()}/printers`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -216,7 +252,7 @@ export class ApiClient {
    * Scale working model
    */
   async scaleModel(projectId: string, modelId: string, payload: ScaleModelPayload): Promise<WorkingModel> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/scale`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/scale`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -229,7 +265,7 @@ export class ApiClient {
    * Rotate working model
    */
   async rotateModel(projectId: string, modelId: string, payload: RotateModelPayload): Promise<WorkingModel> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/rotate`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/rotate`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -242,7 +278,7 @@ export class ApiClient {
    * Center working model on the build plate
    */
   async centerModel(projectId: string, modelId: string): Promise<WorkingModel> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/center`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/center`, {
       method: "POST",
       headers: { "Accept": "application/json" },
     });
@@ -254,7 +290,7 @@ export class ApiClient {
    * Lay working model flat on build surface (minimizing overhangs / height)
    */
   async layFlat(projectId: string, modelId: string): Promise<WorkingModel> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/lay_flat`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/lay_flat`, {
       method: "POST",
       headers: { "Accept": "application/json" },
     });
@@ -266,7 +302,7 @@ export class ApiClient {
    * Get overhang inspection analysis
    */
   async getOverhangs(projectId: string, modelId: string, thresholdDeg: number = 45): Promise<OverhangAnalysis> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/overhangs?critical_angle_deg=${thresholdDeg}`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/overhangs?critical_angle_deg=${thresholdDeg}`, {
       method: "GET",
       headers: { "Accept": "application/json" },
       cache: "no-store",
@@ -279,7 +315,7 @@ export class ApiClient {
    * Slice working model along planar cut
    */
   async sliceModel(projectId: string, modelId: string, payload: SliceModelPayload): Promise<SliceModelResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/slice`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/slice`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -295,7 +331,7 @@ export class ApiClient {
    * Run automated mesh repair and healing
    */
   async repairModel(projectId: string, modelId: string, payload?: RepairModelPayload): Promise<RepairModelResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/repair`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/repair`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -311,7 +347,7 @@ export class ApiClient {
    * Hollow out a solid 3D model with wall thickness and bottom drain holes
    */
   async hollowModel(projectId: string, modelId: string, payload?: HollowModelPayload): Promise<HollowModelResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/hollow`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/hollow`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -327,7 +363,7 @@ export class ApiClient {
    * Duplicate a working model in the project
    */
   async duplicateModel(projectId: string, modelId: string): Promise<WorkingModel> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/duplicate`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/duplicate`, {
       method: "POST",
       headers: { "Accept": "application/json" },
     });
@@ -342,7 +378,7 @@ export class ApiClient {
    * Delete a working model from the project
    */
   async deleteModel(projectId: string, modelId: string): Promise<{ message: string; model_id: string }> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}`, {
       method: "DELETE",
       headers: { "Accept": "application/json" },
     });
@@ -357,7 +393,7 @@ export class ApiClient {
    * Auto-arrange all models collision-free on the build plate
    */
   async arrangeProject(projectId: string, payload?: ArrangeProjectPayload): Promise<ArrangeProjectResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/arrange`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/arrange`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -373,7 +409,7 @@ export class ApiClient {
    * Export transformed model
    */
   async exportModel(projectId: string, modelId: string, payload: ExportModelPayload): Promise<{ download_url: string; filename: string }> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/export`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -386,7 +422,7 @@ export class ApiClient {
    * Export all project models into a 3MF archive for OrcaSlicer/Bambu Studio
    */
   async exportProject3MF(projectId: string, payload?: ExportProject3MFPayload): Promise<ExportProject3MFResponse> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/export_3mf`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/export_3mf`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -405,7 +441,7 @@ export class ApiClient {
     projectId: string,
     payload: import("@shared/types/api").CalibrationGeneratePayload
   ): Promise<import("@shared/types/api").CalibrationGenerateResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/calibration/generate`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/calibration/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -425,7 +461,7 @@ export class ApiClient {
     modelId: string,
     payload?: import("@shared/types/api").AutoOrientPayload
   ): Promise<import("@shared/types/api").AutoOrientResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/auto_orient`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/auto_orient`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -444,7 +480,7 @@ export class ApiClient {
     projectId: string,
     payload?: import("@shared/types/api").AutoArrangePayload
   ): Promise<import("@shared/types/api").AutoArrangeResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/auto_arrange`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/auto_arrange`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -464,7 +500,7 @@ export class ApiClient {
     modelId: string,
     payload?: import("@shared/types/api").MouseEarPayload
   ): Promise<import("@shared/types/api").MouseEarResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/mouse_ears`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/mouse_ears`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -484,7 +520,7 @@ export class ApiClient {
     modelId: string,
     payload?: import("@shared/types/api").AdaptiveLayerPayload
   ): Promise<import("@shared/types/api").AdaptiveLayerResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/adaptive_layers`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/adaptive_layers`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -500,7 +536,7 @@ export class ApiClient {
    * List filament material profiles
    */
   async listFilaments(projectId?: string): Promise<import("@shared/types/api").FilamentProfile[]> {
-    const url = projectId ? `${this.baseUrl}/projects/${projectId}/filaments` : `${this.baseUrl}/filaments`;
+    const url = projectId ? `${this.getBaseUrl()}/projects/${projectId}/filaments` : `${this.getBaseUrl()}/filaments`;
     const res = await fetch(url, {
       method: "GET",
       headers: { "Accept": "application/json" },
@@ -518,7 +554,7 @@ export class ApiClient {
     modelId: string,
     payload?: import("@shared/types/api").CostEstimationPayload
   ): Promise<import("@shared/types/api").CostEstimationResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/estimate_cost`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/estimate_cost`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -533,7 +569,7 @@ export class ApiClient {
    * MaskSmith: Analyze wearable mask fit and anthropometric clearance
    */
   async analyzeMaskFit(projectId: string, modelId: string): Promise<MaskFitAnalysis> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/masksmith/fit-analyze`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/masksmith/fit-analyze`, {
       method: "POST",
       headers: { "Accept": "application/json" },
     });
@@ -548,7 +584,7 @@ export class ApiClient {
    * MaskSmith: Auto-scale mask to match targeted human head preset
    */
   async autoScaleMask(projectId: string, modelId: string, payload: MaskFitScalePayload): Promise<WorkingModel> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/masksmith/auto-scale`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/masksmith/auto-scale`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -564,7 +600,7 @@ export class ApiClient {
    * MaskSmith: Punch neodymium magnet sockets into mask perimeter
    */
   async punchMagnetSockets(projectId: string, modelId: string, payload: MagnetSocketPunchPayload): Promise<MagnetSocketPunchResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/masksmith/punch-magnets`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/masksmith/punch-magnets`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -580,7 +616,7 @@ export class ApiClient {
    * MaskSmith: Punch strap webbing slots and harness loops
    */
   async punchStrapSlots(projectId: string, modelId: string, payload: StrapSlotPunchPayload): Promise<StrapSlotPunchResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/masksmith/punch-strap-slots`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/masksmith/punch-strap-slots`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -596,7 +632,7 @@ export class ApiClient {
    * FigureForge: Calculate center of mass and tipping angle stability
    */
   async analyzeFigureCOM(projectId: string, modelId: string): Promise<CenterOfMassAnalysis> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/figureforge/com-analyze`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/figureforge/com-analyze`, {
       method: "POST",
       headers: { "Accept": "application/json" },
     });
@@ -611,7 +647,7 @@ export class ApiClient {
    * FigureForge: Generate custom collectible display plinth
    */
   async generatePlinth(projectId: string, modelId: string, payload: PlinthGeneratePayload): Promise<PlinthGenerateResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/figureforge/generate-plinth`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/figureforge/generate-plinth`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -627,7 +663,7 @@ export class ApiClient {
    * FigureForge: Create mounting key-pegs on figure feet
    */
   async createKeyPegs(projectId: string, modelId: string, payload: KeyPegPayload): Promise<KeyPegResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/figureforge/create-key-pegs`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/figureforge/create-key-pegs`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -643,7 +679,7 @@ export class ApiClient {
    * Phase 8: Analyze thin walls and fragile geometries
    */
   async analyzeThinWalls(projectId: string, modelId: string, payload?: ThinWallAnalysisPayload): Promise<ThinWallAnalysisResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/thin_walls`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/thin_walls`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -659,7 +695,7 @@ export class ApiClient {
    * Phase 8: Detect unsupported floating overhang islands
    */
   async analyzeIslands(projectId: string, modelId: string, payload?: IslandAnalysisPayload): Promise<IslandAnalysisResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/islands`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/islands`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -675,7 +711,7 @@ export class ApiClient {
    * Phase 10: Generate procedural 3D infill lattice (Gyroid, Honeycomb, Rectilinear, Cubic)
    */
   async generateInfill(projectId: string, modelId: string, payload: InfillGeneratePayload): Promise<InfillGenerateResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/infill`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/infill`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
@@ -691,7 +727,7 @@ export class ApiClient {
    * Phase 10: Reinforce hollow walls with structural ribs and continuous drainage channels
    */
   async reinforceRibs(projectId: string, modelId: string, payload: RibReinforcePayload): Promise<RibReinforceResult> {
-    const res = await fetch(`${this.baseUrl}/projects/${projectId}/models/${modelId}/reinforce_ribs`, {
+    const res = await fetch(`${this.getBaseUrl()}/projects/${projectId}/models/${modelId}/reinforce_ribs`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
