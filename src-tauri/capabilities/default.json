@@ -10,6 +10,9 @@
     "dialog:allow-save",
     "shell:default",
     "shell:allow-open",
-    "process:default"
+    "process:default",
+    "fs:default",
+    "fs:allow-write-file",
+    "fs:allow-read-file"
   ]
 }

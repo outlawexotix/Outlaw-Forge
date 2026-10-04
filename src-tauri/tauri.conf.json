@@ -21,7 +21,8 @@
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
-        "theme": "Dark"
+        "theme": "Dark",
+        "backgroundColor": "#0B0F17"
       }
     ],
     "security": {
@@ -36,6 +37,26 @@
       "icons/128x128.png",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["stl"],
+        "name": "Stereolithography 3D Mesh",
+        "description": "Stereolithography 3D Mesh",
+        "role": "Editor"
+      },
+      {
+        "ext": ["obj"],
+        "name": "Wavefront 3D Object",
+        "description": "Wavefront 3D Object",
+        "role": "Editor"
+      },
+      {
+        "ext": ["3mf"],
+        "name": "3D Manufacturing Format",
+        "description": "3D Manufacturing Format",
+        "role": "Editor"
+      }
+    ],
     "externalBin": [
       "binaries/outlaw_forge_sidecar"
     ]
@@ -43,6 +64,7 @@
   "plugins": {
     "dialog": {},
     "shell": {},
-    "process": {}
+    "process": {},
+    "fs": {}
   }
 }
