@@ -555,14 +555,14 @@ export default function WorkbenchPage() {
             activeTool={activeTool}
             slicePlaneOrigin={slicePlaneOrigin}
             slicePlaneNormal={slicePlaneNormal}
-            onSelectModel={(id) => setSelectedModelId(id)}
+            onSelectModel={(id: string) => setSelectedModelId(id)}
             onSetTool={setActiveTool}
             onDuplicateModel={handleViewportDuplicate}
             onDeleteModel={handleViewportDelete}
             onMirrorModel={handleViewportMirror}
             onTransformChange={handleViewportTransformChange}
             onCursorCoordinates={(coords: { x: number; y: number; z: number }) => setCursorCoords(coords)}
-            onDropFile={(file) => handleModelImport(file)}
+            onDropFile={(file: File) => handleModelImport(file)}
             className="w-full h-full"
           />
         </main>
