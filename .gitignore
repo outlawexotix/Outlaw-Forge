@@ -27,6 +27,9 @@ apps/web/tsconfig.tsbuildinfo
 build/
 dist/
 *.egg-info/
+binaries/
+src-tauri/binaries/
+apps/api/stl
 
 # CAD software temporary files
 *.~*

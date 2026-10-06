@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI):
         except OSError:
             pass
 
+    sys.stdout.write(f"OUTLAW_FORGE_API_READY:port={bound_port}\n")
     sys.stdout.write(f"HEALTH_OK: PORT={bound_port}\n")
     sys.stdout.flush()
 

@@ -106,14 +106,15 @@ def run_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     log_level: str = "info",
+    sock: Optional[socket.socket] = None,
 ) -> None:
-    """Configure FastAPI app and launch uvicorn server."""
-    os.environ["PORT"] = str(port)
+    """Configure FastAPI app and launch uvicorn server.
 
+    When port is 0 or a pre-bound socket is supplied, utilizes zero-race socket binding
+    so the port discovered is never closed between discovery and listen.
+    """
     # Late import to ensure environment variables are configured before settings initialize
     from app.main import app
-
-    app.state.port = port
 
     config = uvicorn.Config(
         app=app,
@@ -122,8 +123,26 @@ def run_server(
         log_level=log_level,
         access_log=False,
     )
-    server = uvicorn.Server(config)
-    server.run()
+
+    if sock is not None:
+        bound_port = int(sock.getsockname()[1])
+        os.environ["PORT"] = str(bound_port)
+        app.state.port = bound_port
+        server = uvicorn.Server(config)
+        server.run(sockets=[sock])
+    elif port == 0:
+        # Zero-race: bind socket immediately via uvicorn and keep it open
+        sock = config.bind_socket()
+        bound_port = int(sock.getsockname()[1])
+        os.environ["PORT"] = str(bound_port)
+        app.state.port = bound_port
+        server = uvicorn.Server(config)
+        server.run(sockets=[sock])
+    else:
+        os.environ["PORT"] = str(port)
+        app.state.port = port
+        server = uvicorn.Server(config)
+        server.run()
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:
@@ -134,8 +153,11 @@ def main(args: Optional[Sequence[str]] = None) -> None:
         db_path=parsed.db_path,
         handshake_file=parsed.handshake_file,
     )
-    port = resolve_port(parsed.port, host=parsed.host)
-    run_server(host=parsed.host, port=port)
+    if parsed.port == 0:
+        run_server(host=parsed.host, port=0)
+    else:
+        port = resolve_port(parsed.port, host=parsed.host)
+        run_server(host=parsed.host, port=port)
 
 
 if __name__ == "__main__":

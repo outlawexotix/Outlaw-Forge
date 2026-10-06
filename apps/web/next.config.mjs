@@ -1,5 +1,11 @@
 /** @type {import('next').NextConfig} */
+const isProdBuild =
+  process.env.NODE_ENV === 'production' ||
+  process.env.npm_lifecycle_event === 'build' ||
+  process.argv.includes('build');
+
 const isStaticExport =
+  isProdBuild ||
   process.env.OUTPUT_EXPORT === 'true' ||
   process.env.STATIC_EXPORT === 'true' ||
   process.env.TAURI_ENV_PLATFORM !== undefined;
@@ -10,7 +16,7 @@ const nextConfig = {
   ...(isStaticExport
     ? {
         output: 'export',
-        trailingSlash: true,
+        trailingSlash: false,
         images: {
           unoptimized: true,
         },

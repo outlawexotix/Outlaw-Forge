@@ -22,8 +22,9 @@ import {
 } from "@shared/types/api";
 import dynamic from "next/dynamic";
 import { X } from "lucide-react";
+import type { ViewportContainerProps } from "@/components/viewport/ViewportContainer";
 
-const ViewportContainer = dynamic(
+const ViewportContainer: React.ComponentType<ViewportContainerProps> = dynamic(
   () => import("@/components/viewport/ViewportContainer").then((mod) => mod.ViewportContainer),
   {
     ssr: false,
@@ -562,7 +563,7 @@ export default function WorkbenchPage() {
             onMirrorModel={handleViewportMirror}
             onTransformChange={handleViewportTransformChange}
             onCursorCoordinates={(coords: { x: number; y: number; z: number }) => setCursorCoords(coords)}
-            onDropFile={(file: File) => handleModelImport(file)}
+            onDropFile={(file) => handleModelImport(file)}
             className="w-full h-full"
           />
         </main>
