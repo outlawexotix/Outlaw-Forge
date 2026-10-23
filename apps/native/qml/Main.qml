@@ -16,6 +16,8 @@ ApplicationWindow {
     color: "#0e1112"
     property bool modelSelected: false
     property bool modelVisible: true
+    property bool scenePanelVisible: true
+    property bool gridVisible: true
     property vector3d modelOffset: Qt.vector3d(0, 0, 0)
     property vector3d modelRotation: Qt.vector3d(0, 0, 0)
     property vector3d modelScale: Qt.vector3d(1, 1, 1)
@@ -24,13 +26,6 @@ ApplicationWindow {
     property int nextGeometryId: 1
     property int nextSceneInstanceId: 1
     property string pendingImportUrl: ""
-    property string pendingSliceRequestId: ""
-    property var pendingSliceOptions: ({})
-    property string pendingAutoOrientRequestId: ""
-    property var pendingAutoOrientRetry: null
-    property string autoOrientStatusText: ""
-    property string pendingRepairRequestId: ""
-    property var pendingRepairRetry: null
     property bool restoringInstanceState: false
     property bool wireframeMode: false
     property bool boundsVisible: false
@@ -72,6 +67,14 @@ ApplicationWindow {
         measurementStart = null
         measurementEnd = null
         statusLabel.text = measurementMode ? "Measure: select a first point on the model." : "Measurement cleared"
+    }
+
+    function clearScene() {
+        while (sceneInstances.count > 0) {
+            selectedInstanceIndex = sceneInstances.count - 1
+            removeSelectedInstance()
+        }
+        statusLabel.text = "Scene cleared"
     }
 
     function selectedGeometry() {
@@ -117,335 +120,49 @@ ApplicationWindow {
         return false
     }
 
+    function normalizedSourceUrl(value) {
+        let key = String(value || "")
+        try {
+            key = decodeURIComponent(key)
+        } catch (error) {
+            // Keep the original URL when a file name contains malformed escapes.
+        }
+        key = key.replace(/\\/g, "/").replace(/^file:\/{1,3}/i, "")
+        return Qt.platform.os === "windows" ? key.toLowerCase() : key
+    }
+
     function selectedAutoOrientRow() {
         if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
             return null
-        const row = sceneInstances.get(selectedInstanceIndex)
-        const filename = String(row.name || "").toLowerCase()
-        if (!row.backendModelId || (!filename.endsWith(".stl") && !filename.endsWith(".obj")))
-            return null
-        return row
+        return sceneInstances.get(selectedInstanceIndex)
     }
 
     function startAutoOrient() {
         const row = selectedAutoOrientRow()
-        if (!row || pendingAutoOrientRequestId || pendingAutoOrientRetry)
+        if (!row)
             return
-        const requestId = row.instanceId
-        pendingAutoOrientRequestId = requestId
-        autoOrientStatusText = "Sending auto-orient request to the geometry service..."
-        statusLabel.text = autoOrientStatusText
-        geometryCommandClient.autoOrientModel(requestId, row.backendModelId)
-    }
-
-    function retryAutoOrient() {
-        if (!pendingAutoOrientRetry || pendingAutoOrientRequestId)
-            return
-        const row = selectedAutoOrientRow()
-        if (!row || row.backendModelId !== pendingAutoOrientRetry.modelId)
-            return
-        pendingAutoOrientRequestId = pendingAutoOrientRetry.requestId
-        autoOrientStatusText = "Retrying download of the persisted oriented mesh..."
-        statusLabel.text = autoOrientStatusText
-        geometryCommandClient.retryAutoOrientDownload(pendingAutoOrientRetry.requestId)
-    }
-
-    function failAutoOrient(requestId, message) {
-        if (pendingAutoOrientRequestId === requestId)
-            pendingAutoOrientRequestId = ""
-        autoOrientStatusText = `Auto-orient failed: ${message}`
-        statusLabel.text = autoOrientStatusText
-    }
-
-    function autoOrientDownloadFailed(requestId, modelId, message) {
-        if (pendingAutoOrientRequestId === requestId)
-            pendingAutoOrientRequestId = ""
-        pendingAutoOrientRetry = { requestId: requestId, modelId: modelId }
-        autoOrientStatusText = `Auto-orient was saved by the service, but its mesh download failed: ${message} Select a matching instance and retry the download.`
-        statusLabel.text = autoOrientStatusText
-    }
-
-    function completeAutoOrient(requestId, modelId, filename, localFileUrl,
-                                optimalRotationDeg, originalOverhangCm2,
-                                optimizedOverhangCm2, reductionPercentage, message) {
-        if (pendingAutoOrientRequestId === requestId)
-            pendingAutoOrientRequestId = ""
-        pendingAutoOrientRetry = null
-
-        const oriented = createDerivedGeometry()
-        if (!loadSliceGeometry(oriented.geometry, localFileUrl) || !oriented.geometry.loaded) {
-            destroyDerivedGeometry(oriented.key)
-            failAutoOrient(requestId,
-                           "The oriented file was downloaded, but the native viewport could not parse it. The current scene geometry is unchanged.")
-            return
-        }
-
-        let updatedCount = 0
-        for (let i = 0; i < sceneInstances.count; ++i) {
-            if (sceneInstances.get(i).backendModelId === modelId) {
-                sceneInstances.setProperty(i, "geometryKey", oriented.key)
-                updatedCount++
-            }
-        }
-        if (updatedCount === 0) {
-            destroyDerivedGeometry(oriented.key)
-            failAutoOrient(requestId,
-                           `The service oriented ${filename}, but no current scene instance uses its model ID. The scene was left unchanged.`)
-            return
-        }
-
-        if (selectedInstanceIndex >= 0 && selectedInstanceIndex < sceneInstances.count
-                && sceneInstances.get(selectedInstanceIndex).backendModelId === modelId)
-            refreshMeshAnalysis()
-
-        autoOrientStatusText = `Oriented rotation ${optimalRotationDeg.x.toFixed(1)}°, ${optimalRotationDeg.y.toFixed(1)}°, ${optimalRotationDeg.z.toFixed(1)}°. Overhang ${Number(originalOverhangCm2).toFixed(2)} → ${Number(optimizedOverhangCm2).toFixed(2)} cm2 (${Number(reductionPercentage).toFixed(1)}% reduction). ${message}`
-        statusLabel.text = autoOrientStatusText
-    }
-
-    function selectedRepairRow() {
-        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
-            return null
-        const row = sceneInstances.get(selectedInstanceIndex)
-        const filename = String(row.name || "").toLowerCase()
-        if (!row.backendModelId || (!filename.endsWith(".stl") && !filename.endsWith(".obj")))
-            return null
-        return row
-    }
-
-    function repairSelectedMesh() {
-        const row = selectedRepairRow()
-        if (row && pendingRepairRequestId)
-            return
-        if (row && pendingRepairRetry) {
-            statusLabel.text = "A persisted service repair is waiting for its mesh download to be retried."
-            return
-        }
-        if (row) {
-            const toleranceMm = repairTolerance.value / 100.0
-            if (toleranceMm < 0.00001 || toleranceMm > 1.0) {
-                statusLabel.text = "Service repair supports weld tolerances from 0.00001 to 1.00 mm."
-                return
-            }
-            pendingRepairRequestId = row.instanceId
-            statusLabel.text = "Sending repair to the geometry service..."
-            geometryCommandClient.repairModel(row.instanceId, row.backendModelId, toleranceMm)
-            return
-        }
-
-        const result = selectedGeometry().repairMesh(repairTolerance.value / 100.0)
+        const result = selectedGeometry().autoOrient(65.0)
         if (result.error) {
             statusLabel.text = result.error
             return
         }
         refreshMeshAnalysis()
-        statusLabel.text = `Local repair complete: welded ${result.weldedVertices} vertices, removed ${result.removedTriangles} triangles`
+        statusLabel.text = `Local auto-orient complete: evaluated ${result.candidateCount} build orientations, overhang area ${Number(result.overhangAreaCm2).toFixed(2)} cm2, model placed at Z=0 mm.`
     }
 
-    function retryRepairDownload() {
-        if (!pendingRepairRetry || pendingRepairRequestId)
+    function repairSelectedMesh() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
             return
-        const row = selectedRepairRow()
-        if (!row || row.backendModelId !== pendingRepairRetry.modelId) {
-            statusLabel.text = "Select an instance of the repaired model before retrying its download."
-            return
-        }
-        pendingRepairRequestId = pendingRepairRetry.requestId
-        statusLabel.text = "Retrying download of the persisted repaired mesh..."
-        geometryCommandClient.retryRepairDownload(pendingRepairRetry.requestId)
-    }
-
-    function failRepair(requestId, message) {
-        if (pendingRepairRequestId === requestId)
-            pendingRepairRequestId = ""
-        pendingRepairRetry = null
-        statusLabel.text = `Service repair failed: ${message}`
-    }
-
-    function repairDownloadFailed(requestId, modelId, message) {
-        if (pendingRepairRequestId === requestId)
-            pendingRepairRequestId = ""
-        pendingRepairRetry = { requestId: requestId, modelId: modelId }
-        statusLabel.text = `Repair was saved by the service, but its mesh download failed: ${message} Select a matching instance and use Retry Repair Download.`
-    }
-
-    function completeRepair(requestId, modelId, filename, localFileUrl, report, message) {
-        if (pendingRepairRequestId === requestId)
-            pendingRepairRequestId = ""
-        pendingRepairRetry = null
-        const repaired = createDerivedGeometry()
-        if (!loadSliceGeometry(repaired.geometry, localFileUrl) || !repaired.geometry.loaded) {
-            destroyDerivedGeometry(repaired.key)
-            statusLabel.text = "The repaired file was downloaded, but the native viewport could not parse it. The current scene is unchanged."
+        const geometry = selectedGeometry()
+        const before = geometry.analyzeMesh()
+        const result = geometry.repairMesh(repairTolerance.value / 100.0)
+        if (result.error) {
+            statusLabel.text = result.error
             return
         }
-        let updatedCount = 0
-        for (let i = 0; i < sceneInstances.count; ++i) {
-            if (sceneInstances.get(i).backendModelId === modelId) {
-                sceneInstances.setProperty(i, "geometryKey", repaired.key)
-                updatedCount++
-            }
-        }
-        if (updatedCount === 0) {
-            destroyDerivedGeometry(repaired.key)
-            statusLabel.text = `The service repaired ${filename}, but no scene instance still uses that model ID. The scene is unchanged.`
-            return
-        }
-        if (selectedInstanceIndex >= 0 && selectedInstanceIndex < sceneInstances.count
-                && sceneInstances.get(selectedInstanceIndex).backendModelId === modelId)
-            refreshMeshAnalysis()
-        statusLabel.text = `Repair report: ${report.holes_filled} holes filled, ${report.degenerate_faces_removed} degenerate faces removed, ${report.duplicate_vertices_welded} vertices welded, normals corrected: ${report.inverted_normals_fixed ? "yes" : "no"}. Watertight: ${report.is_watertight_before ? "yes" : "no"} before, ${report.is_watertight_after ? "yes" : "no"} after. Triangles: ${report.triangle_count_before} to ${report.triangle_count_after}. ${message}`
-    }
-
-    function clearPendingSlice(requestId) {
-        const updated = Object.assign({}, pendingSliceOptions)
-        delete updated[requestId]
-        pendingSliceOptions = updated
-        if (pendingSliceRequestId === requestId)
-            pendingSliceRequestId = ""
-    }
-
-    function failServiceSlice(requestId, message, topModelId, bottomModelId) {
-        const recoveryIds = topModelId || bottomModelId
-            ? ` Persisted model IDs: ${topModelId || "unknown"}, ${bottomModelId || "unknown"}.`
-            : ""
-        const text = `${message}${recoveryIds}`
-        clearPendingSlice(requestId)
-        sliceStatus.text = text
-        statusLabel.text = text
-    }
-
-    function completeServiceSlice(requestId, topModelId, topName, topUrl, topWatertight,
-                                   bottomModelId, bottomName, bottomUrl, bottomWatertight,
-                                   cutAreaCm2, message) {
-        const options = pendingSliceOptions[requestId]
-        clearPendingSlice(requestId)
-        let sourceIndex = -1
-        for (let i = 0; i < sceneInstances.count; ++i) {
-            if (sceneInstances.get(i).instanceId === requestId) {
-                sourceIndex = i
-                break
-            }
-        }
-        if (!options || sourceIndex < 0) {
-            failServiceSlice(requestId, `Slice was saved by the service but its scene instance is no longer available. ${message}`,
-                             topModelId, bottomModelId)
-            return
-        }
-
-        const sourceRow = sceneInstances.get(sourceIndex)
-        const sourceGeometry = geometryForKey(sourceRow.geometryKey)
-        const top = createDerivedGeometry()
-        const bottom = createDerivedGeometry()
-        const topLoaded = loadSliceGeometry(top.geometry, topUrl)
-        const bottomLoaded = loadSliceGeometry(bottom.geometry, bottomUrl)
-        if (!topLoaded || !bottomLoaded) {
-            destroyDerivedGeometry(top.key)
-            destroyDerivedGeometry(bottom.key)
-            failServiceSlice(requestId, "The service saved the cut, but a returned mesh could not be loaded locally.",
-                             topModelId, bottomModelId)
-            return
-        }
-
-        sceneInstances.setProperty(sourceIndex, "geometryKey", top.key)
-        sceneInstances.setProperty(sourceIndex, "backendModelId", topModelId)
-        sceneInstances.setProperty(sourceIndex, "sourceUrl", "")
-        sceneInstances.setProperty(sourceIndex, "name", topName)
-        sceneInstances.setProperty(sourceIndex, "piece", "derived")
-        if (options.keepBoth) {
-            sceneInstances.append({
-                instanceId: newSceneInstanceId(), name: bottomName, piece: "derived", geometryKey: bottom.key,
-                backendModelId: bottomModelId, sourceUrl: "",
-                offsetX: sourceRow.offsetX + sourceGeometry.dimensions.x + 6,
-                offsetY: sourceRow.offsetY, offsetZ: sourceRow.offsetZ,
-                rotationX: sourceRow.rotationX, rotationY: sourceRow.rotationY, rotationZ: sourceRow.rotationZ,
-                scaleX: sourceRow.scaleX, scaleY: sourceRow.scaleY, scaleZ: sourceRow.scaleZ,
-                instanceVisible: sourceRow.instanceVisible
-            })
-        }
-        const topStatus = topWatertight ? "watertight" : "NOT watertight"
-        const bottomStatus = bottomWatertight ? "watertight" : "NOT watertight"
-        const closureStatus = options.keepBoth
-            ? `Positive side: ${topStatus}. Negative side: ${bottomStatus}.`
-            : `Kept section: ${topStatus}.`
-        const cutSummary = `Service slice saved. Cut area ${Number(cutAreaCm2).toFixed(3)} cm2. ${closureStatus} ${message}`
-        sliceStatus.text = cutSummary
-        statusLabel.text = cutSummary
-        if (options.keepBoth && selectedInstanceIndex === sourceIndex)
-            setInstanceSelected(sceneInstances.count - 1)
-        else if (selectedInstanceIndex === sourceIndex)
-            setInstanceSelected(sourceIndex)
-        if (selectedInstanceIndex === sourceIndex || (options.keepBoth && selectedInstanceIndex === sceneInstances.count - 1))
-            refreshMeshAnalysis()
-        slicePlaneActive = false
-        sliceDialog.close()
-    }
-
-    Connections {
-        target: geometryCommandClient
-
-        function onSourceRegistered(sourceUrl, projectId, modelId) {
-            const sourceKey = sourceUrl.toString()
-            let associated = false
-            for (let i = 0; i < sceneInstances.count; ++i) {
-                if (sceneInstances.get(i).sourceUrl === sourceKey) {
-                    sceneInstances.setProperty(i, "backendModelId", modelId)
-                    associated = true
-                }
-            }
-            if (associated)
-                statusLabel.text = `Source registered with geometry service (${projectId}).`
-        }
-
-        function onSourceRegistrationFailed(sourceUrl, message) {
-            const sourceKey = sourceUrl.toString()
-            for (let i = 0; i < sceneInstances.count; ++i) {
-                if (sceneInstances.get(i).sourceUrl === sourceKey) {
-                    const text = `Service registration failed: ${message}`
-                    statusLabel.text = text
-                    sliceStatus.text = text
-                    return
-                }
-            }
-        }
-
-        function onSliceCompleted(requestId, topModelId, topName, topUrl, topWatertight,
-                                  bottomModelId, bottomName, bottomUrl, bottomWatertight,
-                                  cutAreaCm2, message) {
-            completeServiceSlice(requestId, topModelId, topName, topUrl, topWatertight,
-                                 bottomModelId, bottomName, bottomUrl, bottomWatertight,
-                                 cutAreaCm2, message)
-        }
-
-        function onSliceFailed(requestId, message, topModelId, bottomModelId) {
-            failServiceSlice(requestId, message, topModelId, bottomModelId)
-        }
-
-        function onAutoOrientCompleted(requestId, modelId, filename, localFileUrl,
-                                        optimalRotationDeg, originalOverhangCm2,
-                                        optimizedOverhangCm2, reductionPercentage, message) {
-            completeAutoOrient(requestId, modelId, filename, localFileUrl, optimalRotationDeg,
-                               originalOverhangCm2, optimizedOverhangCm2, reductionPercentage, message)
-        }
-
-        function onAutoOrientFailed(requestId, message) {
-            failAutoOrient(requestId, message)
-        }
-
-        function onAutoOrientDownloadFailed(requestId, modelId, message) {
-            window.autoOrientDownloadFailed(requestId, modelId, message)
-        }
-
-        function onRepairCompleted(requestId, modelId, filename, localFileUrl, report, message) {
-            completeRepair(requestId, modelId, filename, localFileUrl, report, message)
-        }
-
-        function onRepairFailed(requestId, message) {
-            failRepair(requestId, message)
-        }
-
-        function onRepairDownloadFailed(requestId, modelId, message) {
-            repairDownloadFailed(requestId, modelId, message)
-        }
+        refreshMeshAnalysis()
+        const after = meshAnalysis
+        statusLabel.text = `Local repair: ${result.holesFilled} planar holes filled, ${result.weldedVertices} vertices welded, ${result.removedTriangles} degenerate triangles removed. Watertight: ${before.watertight ? "yes" : "no"} before, ${after.watertight ? "yes" : "no"} after. Boundary edges: ${before.boundaryEdges} to ${after.boundaryEdges}.`
     }
 
     function applyPlaneSlice() {
@@ -456,33 +173,57 @@ ApplicationWindow {
             sliceStatus.text = "Select a mesh instance before cutting."
             return
         }
-        const sourceRow = sceneInstances.get(selectedInstanceIndex)
+        const sourceIndex = selectedInstanceIndex
+        const sourceRow = sceneInstances.get(sourceIndex)
         const sourceGeometry = geometryForKey(sourceRow.geometryKey)
         if (!sourceGeometry || !sourceGeometry.loaded) {
             sliceStatus.text = "The selected mesh geometry is unavailable."
             return
         }
-        if (!sourceRow.backendModelId) {
-            sliceStatus.text = "This model is not registered for service-backed slicing. Import an STL or OBJ while the geometry service is available."
+        const kept = createDerivedGeometry()
+        const opposite = keepBoth ? createDerivedGeometry() : null
+        const keepPositive = sliceKeepSide.currentIndex !== 0
+        const result = sourceGeometry.sliceByPlane(point, normal, keepPositive, kept.geometry,
+                                                   opposite ? opposite.geometry : null)
+        if (result.error) {
+            destroyDerivedGeometry(kept.key)
+            if (opposite)
+                destroyDerivedGeometry(opposite.key)
+            sliceStatus.text = result.error
+            statusLabel.text = result.error
             return
         }
-        if (pendingSliceRequestId) {
-            sliceStatus.text = "A service slice is already in progress."
-            return
+
+        const firstReport = kept.geometry.analyzeMesh()
+        const secondReport = opposite ? opposite.geometry.analyzeMesh() : null
+        sceneInstances.setProperty(sourceIndex, "geometryKey", kept.key)
+        sceneInstances.setProperty(sourceIndex, "name", `${sourceRow.name} - cut section`)
+        sceneInstances.setProperty(sourceIndex, "piece", "derived")
+        if (opposite) {
+            sceneInstances.append({
+                instanceId: newSceneInstanceId(), name: `${sourceRow.name} - separated section`, piece: "derived",
+                geometryKey: opposite.key, sourceUrl: sourceRow.sourceUrl,
+                offsetX: sourceRow.offsetX + sourceGeometry.dimensions.x + 6,
+                offsetY: sourceRow.offsetY, offsetZ: sourceRow.offsetZ,
+                rotationX: sourceRow.rotationX, rotationY: sourceRow.rotationY, rotationZ: sourceRow.rotationZ,
+                scaleX: sourceRow.scaleX, scaleY: sourceRow.scaleY, scaleZ: sourceRow.scaleZ,
+                instanceVisible: sourceRow.instanceVisible
+            })
         }
-        const activeModel = instanceRepeater.objectAt(selectedInstanceIndex)
-        if (!activeModel || !activeModel.sceneTransform) {
-            sliceStatus.text = "The selected model transform is not ready."
-            return
-        }
-        const requestId = sourceRow.instanceId
-        const updatedOptions = Object.assign({}, pendingSliceOptions)
-        updatedOptions[requestId] = { keepBoth: keepBoth }
-        pendingSliceOptions = updatedOptions
-        pendingSliceRequestId = requestId
-        sliceStatus.text = "Sending slice to geometry service..."
-        geometryCommandClient.sliceModel(requestId, sourceRow.backendModelId, point, normal,
-                                      sliceKeepSide.currentIndex !== 0, activeModel.sceneTransform)
+        const keptClosure = firstReport.watertight ? "watertight" : `open (${firstReport.boundaryEdges} boundary edges)`
+        const otherClosure = secondReport
+            ? ` Other section: ${secondReport.watertight ? "watertight" : `open (${secondReport.boundaryEdges} boundary edges)`}.`
+            : ""
+        const cutSummary = `Local cut complete. Cut faces closed: ${result.capped ? "yes" : "no"}. Kept section: ${keptClosure}.${otherClosure}`
+        sliceStatus.text = cutSummary
+        statusLabel.text = cutSummary
+        if (keepBoth)
+            setInstanceSelected(sceneInstances.count - 1)
+        else
+            setInstanceSelected(sourceIndex)
+        refreshMeshAnalysis()
+        slicePlaneActive = false
+        sliceDialog.close()
     }
 
     function applyNumericScale(axis, targetValue) {
@@ -515,7 +256,7 @@ ApplicationWindow {
     onModelVisibleChanged: syncActiveInstance()
 
     header: ToolBar {
-        height: 48
+        height: 52
         background: Rectangle { color: "#191714"; border.color: "#49301f"; border.width: 1 }
         RowLayout {
             anchors.fill: parent
@@ -541,6 +282,93 @@ ApplicationWindow {
                 font.pixelSize: 10
                 Layout.leftMargin: 12
             }
+            ToolButton {
+                text: "File"
+                onClicked: fileMenu.open()
+                contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: parent.down ? "#343a35" : "transparent"; radius: 3 }
+                Menu {
+                    id: fileMenu
+                    title: "File"
+                    MenuItem { text: "Import model...    Ctrl+O"; onTriggered: meshDialog.open() }
+                    MenuItem { text: "Export selected mesh as STL..."; enabled: selectedInstanceIndex >= 0; onTriggered: exportDialog.open() }
+                    MenuItem { text: "Clear scene"; enabled: sceneInstances.count > 0; onTriggered: window.clearScene() }
+                    MenuSeparator {}
+                    MenuItem { text: "Close window"; onTriggered: window.close() }
+                }
+            }
+            ToolButton {
+                text: "Edit"
+                onClicked: editMenu.open()
+                contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: parent.down ? "#343a35" : "transparent"; radius: 3 }
+                Menu {
+                    id: editMenu
+                    title: "Edit"
+                    MenuItem { text: "Duplicate instance    Ctrl+D"; enabled: selectedInstanceIndex >= 0; onTriggered: window.duplicateSelectedInstance() }
+                    MenuItem { text: "Remove instance    Delete"; enabled: selectedInstanceIndex >= 0; onTriggered: window.removeSelectedInstance() }
+                    MenuSeparator {}
+                    MenuItem {
+                        text: "Reset transforms"
+                        enabled: selectedInstanceIndex >= 0
+                        onTriggered: {
+                            window.modelOffset = Qt.vector3d(0, 0, 0)
+                            window.modelRotation = Qt.vector3d(0, 0, 0)
+                            window.modelScale = Qt.vector3d(1, 1, 1)
+                            window.modelVisible = true
+                            window.frameImportedModel()
+                        }
+                    }
+                    MenuItem { text: "Place on build plate"; enabled: selectedInstanceIndex >= 0; onTriggered: window.placeSelectedOnBed() }
+                    MenuItem { text: "Center on build plate"; enabled: selectedInstanceIndex >= 0; onTriggered: window.centerSelectedOnPlate() }
+                }
+            }
+            ToolButton {
+                text: "View"
+                onClicked: viewMenu.open()
+                contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: parent.down ? "#343a35" : "transparent"; radius: 3 }
+                Menu {
+                    id: viewMenu
+                    title: "View"
+                    MenuItem { text: "Top"; onTriggered: window.setCameraView("Top") }
+                    MenuItem { text: "Front"; onTriggered: window.setCameraView("Front") }
+                    MenuItem { text: "Right"; onTriggered: window.setCameraView("Right") }
+                    MenuItem { text: "Isometric"; onTriggered: window.setCameraView("Iso") }
+                    MenuItem { text: "Frame selected    Ctrl+F"; enabled: selectedInstanceIndex >= 0; onTriggered: window.frameImportedModel() }
+                    MenuSeparator {}
+                    MenuItem { text: "Wireframe"; checkable: true; checked: window.wireframeMode; onTriggered: window.wireframeMode = checked }
+                    MenuItem { text: "Bounds"; checkable: true; checked: window.boundsVisible; enabled: selectedInstanceIndex >= 0; onTriggered: window.boundsVisible = checked }
+                    MenuItem { text: "Normals"; checkable: true; checked: window.normalsVisible; enabled: selectedInstanceIndex >= 0; onTriggered: window.normalsVisible = checked }
+                    MenuItem { text: "Measurement"; checkable: true; checked: window.measurementMode; onTriggered: { window.measurementMode = checked; if (checked) window.clearMeasurement() } }
+                }
+            }
+            ToolButton {
+                text: "Window"
+                onClicked: windowMenu.open()
+                contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: parent.down ? "#343a35" : "transparent"; radius: 3 }
+                Menu {
+                    id: windowMenu
+                    title: "Window"
+                    MenuItem { text: "Show scene panel"; checkable: true; checked: window.scenePanelVisible; onTriggered: window.scenePanelVisible = checked }
+                    MenuItem { text: "Maximize"; enabled: window.visibility !== Window.Maximized; onTriggered: window.showMaximized() }
+                    MenuItem { text: "Restore"; enabled: window.visibility === Window.Maximized; onTriggered: window.showNormal() }
+                    MenuSeparator {}
+                    MenuItem { text: "Close window"; onTriggered: window.close() }
+                }
+            }
+            ToolButton {
+                text: "Settings"
+                onClicked: settingsMenu.open()
+                contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                background: Rectangle { color: parent.down ? "#343a35" : "transparent"; radius: 3 }
+                Menu {
+                    id: settingsMenu
+                    title: "Settings"
+                    MenuItem { text: "Show build plate grid"; checkable: true; checked: window.gridVisible; onTriggered: window.gridVisible = checked }
+                }
+            }
             Item { Layout.fillWidth: true }
             Label {
                 text: "Z-UP  /  MILLIMETRES"
@@ -549,27 +377,22 @@ ApplicationWindow {
                 font.family: "monospace"
             }
             Button {
-                text: pendingAutoOrientRequestId !== "" ? "Orienting..." : "Auto Orient"
+                text: "Auto Orient"
                 enabled: window.selectedAutoOrientRow() !== null
-                    && window.pendingAutoOrientRequestId === ""
-                    && window.pendingAutoOrientRetry === null
                 onClicked: window.startAutoOrient()
                 ToolTip.visible: hovered
-                ToolTip.text: "Orient registered STL or OBJ geometry through the geometry service. The downloaded mesh includes the baked rotation."
+                ToolTip.text: "Evaluate local build orientations and bake the selected orientation into the in-memory mesh."
                 background: Rectangle { color: parent.enabled ? "#79dec2" : "#343d38"; border.color: "#a2f0d9"; radius: 4 }
                 contentItem: Text { text: parent.text; color: parent.enabled ? "#101512" : "#8b968c"; font.pixelSize: 10; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
             Button {
-                text: pendingAutoOrientRequestId !== "" ? "Downloading..." : "Retry Orient Download"
-                visible: pendingAutoOrientRetry !== null
-                    && window.selectedAutoOrientRow() !== null
-                    && window.selectedAutoOrientRow().backendModelId === pendingAutoOrientRetry.modelId
-                enabled: visible && window.pendingAutoOrientRequestId === ""
-                onClicked: window.retryAutoOrient()
+                text: "Export STL"
+                enabled: importedGeometry.loaded && selectedInstanceIndex >= 0
+                onClicked: exportDialog.open()
                 ToolTip.visible: hovered
-                ToolTip.text: "Retry the GET for the already persisted oriented mesh. The orientation request will not be repeated."
-                background: Rectangle { color: parent.enabled ? "#202723" : "#343d38"; border.color: "#e57b3e"; radius: 4 }
-                contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#8b968c"; font.pixelSize: 9; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                ToolTip.text: "Save the selected mesh and bake its current transforms into a local binary STL in millimetres."
+                background: Rectangle { color: parent.enabled ? "#202723" : "#171c19"; border.color: "#a96c3a"; radius: 4 }
+                contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
             Button {
                 text: "Import Model"
@@ -586,6 +409,7 @@ ApplicationWindow {
 
         Rectangle {
             Layout.preferredWidth: 230
+            visible: window.scenePanelVisible
             Layout.fillHeight: true
             color: "#141817"
             border.color: "#343a35"
@@ -856,14 +680,6 @@ ApplicationWindow {
                                 contentItem: Text { text: parent.text; color: "#161c18"; font.pixelSize: 10; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                                 background: Rectangle { color: "#79dec2"; border.color: "#a2f0d9"; radius: 3 }
                             }
-                            Button {
-                                visible: pendingRepairRetry !== null
-                                text: "Retry Repair Download"
-                                Layout.fillWidth: true
-                                onClicked: retryRepairDownload()
-                                contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 9; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                background: Rectangle { color: "#202723"; border.color: "#d57d3d"; radius: 3 }
-                            }
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -951,6 +767,7 @@ ApplicationWindow {
                         model: 23
                         delegate: Model {
                             required property int index
+                            visible: window.gridVisible
                             source: "#Cube"
                             position: Qt.vector3d((index - 11) * 10, 0, 0.05)
                             scale: Qt.vector3d(0.003, 2.2, 0.001)
@@ -961,6 +778,7 @@ ApplicationWindow {
                         model: 23
                         delegate: Model {
                             required property int index
+                            visible: window.gridVisible
                             source: "#Cube"
                             position: Qt.vector3d(0, (index - 11) * 10, 0.05)
                             scale: Qt.vector3d(2.2, 0.003, 0.001)
@@ -1095,7 +913,7 @@ ApplicationWindow {
                                     window.destroyDerivedGeometry(key)
                                 sceneInstances.append({
                                     instanceId: window.newSceneInstanceId(), name: fileName, piece: "main", geometryKey: "source",
-                                    sourceUrl: window.pendingImportUrl, backendModelId: "",
+                                    sourceUrl: window.pendingImportUrl,
                                     offsetX: 0, offsetY: 0, offsetZ: 0,
                                     rotationX: 0, rotationY: 0, rotationZ: 0,
                                     scaleX: 1, scaleY: 1, scaleZ: 1,
@@ -1443,10 +1261,8 @@ ApplicationWindow {
                         onTriggered: repairSelectedMesh()
                     }
                     MenuItem {
-                        text: "Auto-orient registered STL / OBJ"
+                        text: "Auto-orient selected mesh locally"
                         enabled: window.selectedAutoOrientRow() !== null
-                            && window.pendingAutoOrientRequestId === ""
-                            && window.pendingAutoOrientRetry === null
                         onTriggered: window.startAutoOrient()
                     }
                     MenuItem {
@@ -2027,6 +1843,33 @@ ApplicationWindow {
                 }
             }
 
+            FileDialog {
+                id: exportDialog
+                title: "Export selected mesh as STL"
+                fileMode: FileDialog.SaveFile
+                defaultSuffix: "stl"
+                nameFilters: ["Binary STL mesh (*.stl)"]
+                onAccepted: {
+                    if (window.selectedInstanceIndex < 0 || window.selectedInstanceIndex >= sceneInstances.count)
+                        return
+                    const row = sceneInstances.get(window.selectedInstanceIndex)
+                    const geometry = window.geometryForKey(row.geometryKey)
+                    if (!geometry || !geometry.loaded) {
+                        statusLabel.text = "The selected mesh geometry is unavailable."
+                        return
+                    }
+                    const result = geometry.exportStl(selectedFile,
+                        Qt.vector3d(row.offsetX, row.offsetY, row.offsetZ),
+                        Qt.vector3d(row.rotationX, row.rotationY, row.rotationZ),
+                        Qt.vector3d(row.scaleX, row.scaleY, row.scaleZ))
+                    if (result.error) {
+                        statusLabel.text = result.error
+                        return
+                    }
+                    statusLabel.text = `Exported ${result.triangles} triangles to ${result.path} (millimetres). The imported source remains unchanged.`
+                }
+            }
+
             Dialog {
                 id: sliceDialog
                 parent: Overlay.overlay
@@ -2077,22 +1920,12 @@ ApplicationWindow {
                         Accessible.name: sliceKeepSide.currentIndex === 2 ? "Cut mesh and separate both sections" : "Cut mesh with current plane"
                         Layout.fillWidth: true
                         Layout.preferredHeight: 48
-                        enabled: importedGeometry.loaded && window.slicePlaneActive
-                            && window.pendingSliceRequestId === ""
+                        enabled: window.slicePlaneActive
                             && window.selectedInstanceIndex >= 0
-                            && sceneInstances.get(window.selectedInstanceIndex).backendModelId !== ""
+                            && window.selectedInstanceIndex < sceneInstances.count
                         onClicked: applyPlaneSlice()
                         contentItem: Text { text: parent.text; color: "#101512"; font.pixelSize: 14; font.weight: Font.Bold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         background: Rectangle { color: parent.enabled ? "#f28c45" : "#76563f"; border.color: "#ffbd79"; radius: 3 }
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        visible: window.selectedInstanceIndex >= 0
-                            && sceneInstances.get(window.selectedInstanceIndex).backendModelId === ""
-                        text: "Register this STL or OBJ with the local geometry service before slicing. 3MF service slicing is not available."
-                        color: "#e5a16d"
-                        wrapMode: Text.WordWrap
-                        font.pixelSize: 10
                     }
                     Label {
                         Layout.fillWidth: true
@@ -2336,12 +2169,7 @@ ApplicationWindow {
         else statusLabel.text = "Supported mesh files are STL, OBJ, and 3MF"
         if (!loaded)
             return
-        if (path.endsWith(".stl") || path.endsWith(".obj")) {
-            statusLabel.text = "Imported locally. Registering source with geometry service..."
-            geometryCommandClient.registerSource(url, importedGeometry.fileName)
-        } else {
-            statusLabel.text = "3MF loaded locally. Service-backed slicing supports STL and OBJ."
-        }
+        statusLabel.text = `Imported ${importedGeometry.fileName} locally. Geometry commands run on this device; the source file is unchanged.`
     }
 
     function selectedWorldDimensions() {
@@ -2514,7 +2342,7 @@ ApplicationWindow {
         }
         sceneInstances.append({
             instanceId: newSceneInstanceId(), name: `${source.name} copy`, piece: source.piece, geometryKey: source.geometryKey,
-            sourceUrl: source.sourceUrl, backendModelId: source.backendModelId,
+            sourceUrl: source.sourceUrl,
             offsetX: source.offsetX + offsetX, offsetY: source.offsetY, offsetZ: source.offsetZ,
             rotationX: source.rotationX, rotationY: source.rotationY, rotationZ: source.rotationZ,
             scaleX: source.scaleX, scaleY: source.scaleY, scaleZ: source.scaleZ,
@@ -2599,6 +2427,7 @@ ApplicationWindow {
         }
     }
 
+    Shortcut { sequence: "Ctrl+O"; context: Qt.WindowShortcut; onActivated: meshDialog.open() }
     Shortcut { sequence: "Ctrl+1"; onActivated: setCameraView("Top") }
     Shortcut { sequence: "Ctrl+2"; onActivated: setCameraView("Front") }
     Shortcut { sequence: "Ctrl+3"; onActivated: setCameraView("Right") }

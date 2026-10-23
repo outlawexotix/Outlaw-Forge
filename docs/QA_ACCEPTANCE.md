@@ -16,6 +16,7 @@ Outlaw Forge is checked in separate layers because a backend test, static fronte
 | Critical API workflow | `python tests/test_critical_workflow.py --base-url http://127.0.0.1:8000` | Yes |
 | Native Qt build | `cmake --build <build-dir> --target outlaw-forge-native` | No |
 | Native Qt tests | `ctest --test-dir <build-dir> --output-on-failure` | No |
+| Native top command menus | Open File/Edit/View/Window/Settings and exercise scene actions, viewport toggles, panel/grid visibility, and service URL settings | Yes |
 | Native live slice | Import STL/OBJ and slice in `apps/native/` | Yes |
 | Native live auto-orient | Import/register STL/OBJ, orient, inspect shared instances, and exercise GET-only retry in `apps/native/` | Yes |
 | Native live repair | Import/register STL/OBJ, repair within the 1.0 mm service tolerance limit, inspect report/shared instances, and exercise GET-only retry in `apps/native/` | Yes |
@@ -51,6 +52,7 @@ Run layers independently when a combined process times out. This distinguishes a
 - The native slice request maps the active instance transform into source coordinates and keeps the original scene geometry on service/download failure.
 - Native slice status reports `is_watertight` separately for both API results. Capping is requested, but the native client does not heal an open result.
 - Native auto-orient displays service metrics for the returned mesh, does not apply the optimal rotation a second time, and offers download-only recovery after a persisted operation.
+- Native top command menus expose the same scene and viewport operations as the workbench controls. Actions requiring a selection are disabled with an empty scene; the service URL dialog validates HTTP/HTTPS input before applying it.
 - User-visible workbench copy contains no em dash or separator en dash characters.
 
 ## Release checks

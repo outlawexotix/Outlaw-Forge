@@ -29,9 +29,12 @@ public:
     Q_INVOKABLE bool loadStl(const QUrl &url);
     Q_INVOKABLE bool loadObj(const QUrl &url);
     Q_INVOKABLE bool load3mf(const QUrl &url);
+    Q_INVOKABLE QVariantMap exportStl(const QUrl &url, const QVector3D &offsetMm,
+                                      const QVector3D &rotationDeg, const QVector3D &scale) const;
     Q_INVOKABLE void clearMesh();
     Q_INVOKABLE QVariantMap analyzeMesh() const;
     Q_INVOKABLE QVariantMap repairMesh(double weldToleranceMm);
+    Q_INVOKABLE QVariantMap autoOrient(double criticalAngleDeg = 65.0);
     Q_INVOKABLE QVariantMap sliceByPlane(const QVector3D &pointMm, const QVector3D &normal, bool keepPositive,
                                          MeshGeometry *keptOutput, MeshGeometry *oppositeOutput = nullptr) const;
 

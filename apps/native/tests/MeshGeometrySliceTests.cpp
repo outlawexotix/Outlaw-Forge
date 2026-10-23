@@ -5,7 +5,9 @@
 #include <QTextStream>
 #include <QVector2D>
 #include <QtTest>
+#include <algorithm>
 #include <array>
+#include <limits>
 
 namespace {
 using Triangle = std::array<QVector3D, 3>;
@@ -43,6 +45,19 @@ QVector<Triangle> openSquareSheet()
     return triangles;
 }
 
+QVector<Triangle> openCube()
+{
+    QVector<Triangle> triangles;
+    const QVector3D a(-1, -1, 0), b(1, -1, 0), c(1, 1, 0), d(-1, 1, 0);
+    const QVector3D e(-1, -1, 2), f(1, -1, 2), g(1, 1, 2), h(-1, 1, 2);
+    appendQuad(triangles, a, d, c, b); // bottom
+    appendQuad(triangles, a, b, f, e);
+    appendQuad(triangles, b, c, g, f);
+    appendQuad(triangles, c, d, h, g);
+    appendQuad(triangles, d, a, e, h);
+    return triangles;
+}
+
 bool writeAsciiStl(const QString &path, const QVector<Triangle> &triangles)
 {
     QFile file(path);
@@ -71,6 +86,14 @@ double horizontalCapArea(const QVector<QVector3D> &points)
             area += 0.5 * QVector3D::crossProduct(b - a, c - a).length();
     }
     return area;
+}
+
+double signedVolume(const QVector<QVector3D> &points)
+{
+    double volume = 0.0;
+    for (qsizetype i = 0; i + 2 < points.size(); i += 3)
+        volume += QVector3D::dotProduct(points[i], QVector3D::crossProduct(points[i + 1], points[i + 2])) / 6.0;
+    return volume;
 }
 }
 
@@ -106,6 +129,7 @@ private slots:
             const QVariantMap result = source.sliceByPlane(point, normal, true, &first, &second);
             QVERIFY2(!result.contains(QStringLiteral("error")), qPrintable(result.value(QStringLiteral("error")).toString()));
             QVERIFY(result.value(QStringLiteral("capped")).toBool());
+            QVERIFY(result.value(QStringLiteral("outputsWatertight")).toBool());
             QVERIFY(second.loaded());
 
             if (normal == QVector3D(0, 0, 1)) {
@@ -169,6 +193,40 @@ private slots:
         QVERIFY(kept.loaded());
     }
 
+    void exportsMeshToBinaryStlWithoutChangingSource()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sourcePath = directory.filePath(QStringLiteral("hollow-tube.stl"));
+        const QString exportedPath = directory.filePath(QStringLiteral("cut-section.stl"));
+        QVERIFY(writeAsciiStl(sourcePath, hollowSquareTube()));
+
+        MeshGeometry source;
+        QVERIFY(source.loadStl(QUrl::fromLocalFile(sourcePath)));
+        const QString originalRevision = source.revisionId();
+        const int originalTriangleCount = source.triangleCount();
+
+        const QVector3D offset(10, -3, 5);
+        const QVector3D rotation(0, 0, 90);
+        const QVector3D scale(-2, 1, 0.5f);
+        const QVariantMap exportResult = source.exportStl(QUrl::fromLocalFile(exportedPath), offset, rotation, scale);
+        QVERIFY2(!exportResult.contains(QStringLiteral("error")),
+                 qPrintable(exportResult.value(QStringLiteral("error")).toString()));
+        QCOMPARE(exportResult.value(QStringLiteral("triangles")).toInt(), originalTriangleCount);
+
+        QFile exported(exportedPath);
+        QVERIFY(exported.open(QIODevice::ReadOnly));
+        QCOMPARE(exported.size(), qint64(84 + 50 * originalTriangleCount));
+        MeshGeometry roundTrip;
+        QVERIFY(roundTrip.loadStl(QUrl::fromLocalFile(exportedPath)));
+        QCOMPARE(roundTrip.triangleCount(), originalTriangleCount);
+        QVERIFY((roundTrip.dimensions() - QVector3D(4, 8, 1)).length() < 1.0e-4f);
+        QVERIFY((roundTrip.center() - QVector3D(10, -3, 4.5f)).length() < 1.0e-4f);
+        QCOMPARE(source.revisionId(), originalRevision);
+        QVERIFY(roundTrip.analyzeMesh().value(QStringLiteral("watertight")).toBool());
+        QVERIFY(signedVolume(roundTrip.m_trianglePoints) > 0.0);
+    }
+
     void keepsCutCapsWhenUnrelatedSourceGeometryIsOpen()
     {
         QTemporaryDir directory;
@@ -194,6 +252,48 @@ private slots:
         QVERIFY(second.loaded());
         QVERIFY(result.value(QStringLiteral("triangles")).toInt() > 0);
         QVERIFY(result.value(QStringLiteral("oppositeTriangles")).toInt() > 0);
+    }
+
+    void repairFillsSimpleBoundaryLoopLocally()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("open-cube.stl"));
+        QVERIFY(writeAsciiStl(path, openCube()));
+
+        MeshGeometry mesh;
+        QVERIFY(mesh.loadStl(QUrl::fromLocalFile(path)));
+        QCOMPARE(mesh.analyzeMesh().value(QStringLiteral("boundaryEdges")).toInt(), 4);
+
+        const QVariantMap result = mesh.repairMesh(0.001);
+
+        QVERIFY2(!result.contains(QStringLiteral("error")), qPrintable(result.value(QStringLiteral("error")).toString()));
+        QCOMPARE(result.value(QStringLiteral("holesFilled")).toInt(), 1);
+        QCOMPARE(mesh.analyzeMesh().value(QStringLiteral("boundaryEdges")).toInt(), 0);
+        QCOMPARE(mesh.analyzeMesh().value(QStringLiteral("nonManifoldEdges")).toInt(), 0);
+        QVERIFY(signedVolume(mesh.m_trianglePoints) > 0.0);
+    }
+
+    void autoOrientRunsLocallyAndPlacesMeshOnBuildPlate()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("hollow-tube.stl"));
+        QVERIFY(writeAsciiStl(path, hollowSquareTube()));
+
+        MeshGeometry mesh;
+        QVERIFY(mesh.loadStl(QUrl::fromLocalFile(path)));
+        const int originalTriangleCount = mesh.triangleCount();
+        const QVariantMap result = mesh.autoOrient();
+
+        QVERIFY2(!result.contains(QStringLiteral("error")), qPrintable(result.value(QStringLiteral("error")).toString()));
+        QVERIFY(result.value(QStringLiteral("candidateCount")).toInt() > 1);
+        QCOMPARE(mesh.triangleCount(), originalTriangleCount);
+        QVERIFY(mesh.analyzeMesh().value(QStringLiteral("watertight")).toBool());
+        float minimumZ = std::numeric_limits<float>::infinity();
+        for (const QVector3D &point : mesh.m_trianglePoints)
+            minimumZ = std::min(minimumZ, point.z());
+        QVERIFY(qAbs(minimumZ) < 1.0e-3f);
     }
 };
 
