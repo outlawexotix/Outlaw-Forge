@@ -132,6 +132,53 @@ class MeshGeometrySliceTests : public QObject
     Q_OBJECT
 
 private slots:
+    void copyMeshFromCopiesGeometryAndRevision()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("copy-source.stl"));
+        QVERIFY(writeAsciiStl(path, openCube()));
+
+        MeshGeometry source;
+        MeshGeometry destination;
+        QVERIFY(source.loadStl(QUrl::fromLocalFile(path)));
+        QVERIFY(destination.copyMeshFrom(&source));
+
+        QCOMPARE(destination.loaded(), source.loaded());
+        QCOMPARE(destination.triangleCount(), source.triangleCount());
+        QCOMPARE(destination.dimensions(), source.dimensions());
+        QCOMPARE(destination.center(), source.center());
+        QCOMPARE(destination.analyzeMesh(), source.analyzeMesh());
+        QCOMPARE(destination.fileName(), source.fileName());
+        QCOMPARE(destination.revisionId(), source.revisionId());
+
+        const QString preservedRevision = destination.revisionId();
+        QVERIFY(!destination.copyMeshFrom(nullptr));
+        MeshGeometry unloaded;
+        QVERIFY(!destination.copyMeshFrom(&unloaded));
+        QCOMPARE(destination.revisionId(), preservedRevision);
+    }
+
+    void exportLocalStlPreservesRevisionId()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString sourcePath = directory.filePath(QStringLiteral("local-source.stl"));
+        const QString snapshotPath = directory.filePath(QStringLiteral("local-snapshot.stl"));
+        QVERIFY(writeAsciiStl(sourcePath, openCube()));
+
+        MeshGeometry source;
+        MeshGeometry reloaded;
+        QVERIFY(source.loadStl(QUrl::fromLocalFile(sourcePath)));
+        const QVariantMap result = source.exportLocalStl(QUrl::fromLocalFile(snapshotPath));
+        QVERIFY2(!result.contains(QStringLiteral("error")), qPrintable(result.value(QStringLiteral("error")).toString()));
+        QCOMPARE(result.value(QStringLiteral("path")).toString(), snapshotPath);
+        QVERIFY(reloaded.loadStl(QUrl::fromLocalFile(snapshotPath)));
+        QCOMPARE(reloaded.revisionId(), source.revisionId());
+        QCOMPARE(reloaded.triangleCount(), source.triangleCount());
+        QCOMPARE(reloaded.dimensions(), source.dimensions());
+    }
+
     void splitsEdgeConnectedIslandsInStableOrder()
     {
         QTemporaryDir directory;
