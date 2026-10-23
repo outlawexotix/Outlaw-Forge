@@ -1,101 +1,78 @@
 # Outlaw Forge
 
-Outlaw Forge is a local-first desktop workbench for preparing 3D models for printing. It brings mesh inspection, repair, transformation, print-readiness analysis, printer-fit validation, arrangement, and export into one engineering-focused application.
+Outlaw Forge is a local-first workbench for preparing 3D mesh models for printing. The main desktop application uses a Tauri 2 shell, a Next.js and Three.js workbench, and a locally supervised FastAPI geometry service. An independent Qt Quick 3D application is also being developed as a native viewport foundation.
 
-The desktop architecture combines a Tauri 2 shell, a static Next.js and Three.js workbench, and a supervised FastAPI geometry sidecar. Projects and printer profiles are stored locally in SQLite. Imported source meshes remain unchanged while repairs, transforms, slices, and exports create derived revisions.
+The software focuses on deterministic mesh preparation and printer-aware checks. Original uploads are retained as immutable sources; operations create working revisions, exports, and project history. Outlaw Forge is active development software, not a slicer engine: it prepares meshes and exports files for use in external slicers.
 
-> **Project status:** active development. The desktop shell, local geometry service, CAD viewport, print-readiness cockpit, mesh workflows, packaging automation, and end-to-end desktop verification harness are implemented. Direct G-code generation, signed public installers, and production auto-update distribution are not yet release features.
+## Current state
 
-## Why Outlaw Forge
+| Application | Status | What it does today |
+| --- | --- | --- |
+| Tauri desktop workbench | Main desktop workflow implemented; installer and release checks remain | Project and printer-profile management, mesh preparation, print-readiness checks, viewport inspection, and export through a local API sidecar |
+| Browser workbench | Development workflow implemented | Runs the same Next.js UI and connects to the local FastAPI service |
+| Qt native viewport | Separate experimental application | Imports STL/OBJ and limited 3MF, displays and transforms scene instances, provides inspection and local repair, and routes STL/OBJ planar cuts through the geometry service |
 
-Most mesh utilities expose isolated operations. Outlaw Forge keeps the complete preparation context together:
+The Qt application is not part of the Tauri package and does not replace the main workbench. Its service-backed slice command requires a reachable FastAPI service. It reports the service's watertight result for each half; requesting capped faces does not guarantee that every result is watertight. See [Native viewport migration](docs/NATIVE_VIEWPORT_MIGRATION.md).
 
-- the source model and every derived revision
-- the active printer and its build volume
-- dimensions, topology, overhang, thin-wall, and material diagnostics
-- deterministic repair, transform, slicing, infill, and reinforcement operations
-- a visible operation history from import through export
+## Main workbench capabilities
 
-The result is a print-preparation cockpit rather than another file converter.
+- Import STL, OBJ, GLB, GLTF, and 3MF through the supported project workflows.
+- Inspect dimensions, mesh health, overhangs, thin walls, watertightness, printer fit, and estimated material cost.
+- Transform, orient, arrange, repair, hollow, and slice meshes through deterministic API operations.
+- Create connector pins, infill, and rib reinforcement where supported by the geometry service.
+- Manage SQLite-backed projects, source files, working model revisions, printer profiles, and operation history.
+- Export STL and OrcaSlicer-oriented 3MF project packages.
+- Use MaskSmith and FigureForge project workflows.
+- Run the Tauri desktop with a supervised loopback FastAPI sidecar, dynamic local port allocation, native menus, dialogs, and file associations.
 
-## Implemented capabilities
-
-### Print-readiness cockpit
-
-- Live overhang, thin-wall, watertightness, build-volume, and material-cost checks
-- Printer-aware dimensions and fit status in millimetres
-- One-click repair and orientation preparation
-- Direct STL export plus access to the full geometry inspector
-- Five-stage workflow rail from inspection to export
-
-### CAD and mesh preparation
-
-- STL, OBJ, GLB, GLTF, and 3MF import paths
-- Interactive Three.js build plate, camera views, selection, transforms, wireframe, and inspection modes
-- Scale, rotate, translate, lay-on-face, auto-orient, and auto-arrange operations
-- Mesh healing, hole filling, normal correction, vertex welding, hollowing, and planar slicing
-- Connector pins, parametric infill, rib reinforcement, and derived mesh revisions
-- OrcaSlicer-oriented 3MF export and project packaging
-
-### Local project system
-
-- SQLite-backed projects, printer profiles, working model revisions, and operation history
-- Immutable original uploads with separate working and export storage
-- MaskSmith workflows for wearable mask fit
-- FigureForge workflows for center of mass, plinths, and mounting keys
-
-### Standalone desktop runtime
-
-- Tauri 2 native shell and static Next.js webview
-- PyInstaller-ready FastAPI sidecar with dynamic loopback port allocation
-- Native menus, keyboard accelerators, file dialogs, and STL/OBJ/3MF associations
-- Windows Job Object supervision so the geometry sidecar terminates with the app
-- Dry-run development and production packaging commands
-- Master verification battery covering backend, static export, lifecycle, and automation layers
+The separate Qt viewport has its own format limits and feature boundary; the main workbench's features should not be assumed to exist there. Product behavior and migration status are documented under [`docs/`](docs/README.md).
 
 ## Architecture
 
 ```text
-Tauri 2 desktop shell
-├── Native window, menus, dialogs, file associations, and process lifecycle
-├── Next.js static export
-│   └── React 18 + Three.js CAD and print-readiness workbench
-└── FastAPI sidecar on a dynamic 127.0.0.1 port
-    ├── Trimesh, PyMeshLab, and NumPy geometry services
+Main Tauri desktop
+├── Tauri 2 shell: menus, dialogs, file associations, sidecar lifecycle
+├── Static Next.js workbench: React 19 and Three.js / React Three Fiber
+└── FastAPI geometry sidecar on loopback
+    ├── deterministic mesh operations and project APIs
     ├── SQLite project and operation persistence
-    └── Local uploads, working revisions, and exports
+    └── immutable source uploads, working revisions, and exports
+
+Separate native viewport foundation
+└── Qt Quick 3D application with Z-up, millimetre scene coordinates
+    └── Qt Network client for existing project import, slice, and file routes
 ```
 
-The desktop shell injects the sidecar URL into the webview at startup. Geometry stays deterministic and local. AI integrations, when added, remain advisory and cannot silently mutate a model or project.
+The web viewport uses its renderer coordinate conversion at the scene boundary. The native viewport keeps a right-handed Z-up scene. Both use millimetres for model and printer dimensions. The local API remains the authority for persisted project operations; the Qt slice command reuses its existing API contracts.
 
 ## Repository layout
 
 ```text
-apps/
-├── api/                 FastAPI geometry engine, SQLite persistence, and PyInstaller spec
-└── web/                 Next.js workbench and Three.js viewport
-packages/
-├── shared/              Shared TypeScript API and viewport contracts
-└── three-tools/         Geometry loaders, transforms, materials, and camera tools
-src-tauri/               Tauri 2 desktop shell, permissions, menus, and sidecar supervisor
-docs/                    Architecture, pipeline, desktop, QA, and roadmap documentation
-scripts/                 Web, API, desktop development, build, and verification helpers
-tests/                   Black-box, adversarial, lifecycle, and master E2E checks
+apps/api/          FastAPI service, SQLite repositories, and mesh operations
+apps/web/          Next.js workbench and Three.js viewport
+apps/native/       Separate Qt Quick 3D viewport foundation
+packages/shared/   Shared TypeScript API and viewport contracts
+packages/three-tools/ Three.js geometry loaders, transforms, and viewport tools
+src-tauri/         Tauri shell, capabilities, menus, and sidecar supervisor
+docs/              Product, architecture, geometry, desktop, QA, and migration docs
+scripts/           Development, packaging, and verification helpers
+tests/             API smoke, critical workflow, and desktop acceptance checks
 ```
 
-Runtime data below `data/`, build outputs, sidecar binaries, and local design captures are ignored by Git.
+Runtime projects and mesh artifacts live under ignored `data/` paths. Do not commit user uploads, generated working meshes, exports, local databases, build directories, or sidecar binaries.
 
-## Quick start
-
-### Requirements
+## Requirements
 
 - Node.js 20 or newer and npm
 - Python 3.11 or newer
-- PowerShell on Windows
-- Rust and the Tauri CLI only when running or compiling the native shell
-- PyInstaller only when producing a bundled sidecar executable
+- PowerShell on Windows for the desktop scripts
+- Rust and the Tauri CLI for the Tauri shell and package
+- PyInstaller for a bundled Python sidecar
+- Qt 6.6+, CMake 3.21+, and a C++20 compiler for the separate native viewport
 
-### Install
+## Install and run
+
+Install the JavaScript and Python dependencies:
 
 ```powershell
 npm install
@@ -104,67 +81,49 @@ python -m venv .venv
 python -m pip install -r apps/api/requirements.txt
 ```
 
-Copy `.env.example` to `.env` only when you need to override local ports, CORS, storage, or database settings.
-
-### Run the desktop development workflow
+Run the main desktop development workflow, which starts the local API and available workbench runtime:
 
 ```powershell
 npm run desktop:dev
 ```
 
-The launcher allocates a local API port, starts the FastAPI sidecar, waits for health, and launches the available workbench runtime. To inspect prerequisites without launching processes:
-
-```powershell
-npm run desktop:dev -- -DryRun
-```
-
-### Run in browser development mode
+For browser development, start the API and web UI separately or use the repository orchestrator:
 
 ```powershell
 npm run dev:all
 ```
 
-Then open [http://localhost:3000](http://localhost:3000). API documentation is available at [http://127.0.0.1:8000/api/v1/docs](http://127.0.0.1:8000/api/v1/docs) when the default API port is active.
+Open [http://localhost:3000](http://localhost:3000). The default API documentation URL is [http://127.0.0.1:8000/api/v1/docs](http://127.0.0.1:8000/api/v1/docs).
 
-### Build the standalone desktop package
+To configure and build the separate Qt application, see [apps/native/README.md](apps/native/README.md). Service-backed native slicing defaults to `http://127.0.0.1:8000`; set `OUTLAW_FORGE_API_URL` to a different API origin when needed.
 
-```powershell
-npm run desktop:build
-```
-
-This pipeline creates the static frontend export, bundles the Python sidecar when PyInstaller is available, and builds the Tauri package when Rust is available. Inspect the plan without writing build outputs:
+## Build and verify
 
 ```powershell
-npm run desktop:build -- -DryRun
-```
-
-## Verification
-
-```powershell
-# Backend geometry and API suite
-npm run test:backend
-
-# Frontend quality gates
-npm run lint
 npm run build
-
-# Desktop architecture, static export, lifecycle, and automation battery
+npm run lint
+npm run test:backend
 python tests/verify_m5_e2e_full.py
-
-# Live API smoke check when the API is running
 npm run test:smoke
 ```
 
-The checks are intentionally layered. A static build, backend suite, desktop lifecycle test, and live HTTP probe prove different parts of the product.
+The health smoke test requires the API to be running. Desktop packaging can be checked without starting or writing build outputs:
 
-## Engineering principles
+```powershell
+npm run desktop:dev -- -DryRun
+npm run desktop:build -- -DryRun
+```
 
-1. **Millimetres are canonical.** Dimensions, transforms, printer volumes, and mesh coordinates use millimetres.
-2. **Source assets are immutable.** Original uploads are never silently overwritten.
-3. **Geometry is deterministic.** Repairs, transforms, slicing, and analysis do not depend on model inference.
-4. **Contracts stay synchronized.** FastAPI schemas and shared TypeScript types move together.
-5. **Desktop means local ownership.** Project data and geometry processing stay on the user's machine by default.
-6. **Verification is part of the feature.** A change is not complete until its relevant backend, frontend, and desktop layers pass.
+Native viewport C++ and command tests are configured through CMake in `apps/native/`; see its README for build-specific commands.
+
+## Engineering invariants
+
+1. Model dimensions, printer volumes, and geometry API coordinates use millimetres.
+2. Original uploaded assets are immutable; edits produce derived working or export files.
+3. Geometry operations are deterministic and do not rely on AI inference.
+4. FastAPI schemas and shared TypeScript contracts stay aligned.
+5. The desktop API binds to loopback and owns local project data by default.
+6. Documented completion claims distinguish local tests, live service checks, and release validation.
 
 ## Documentation
 
@@ -174,6 +133,7 @@ The checks are intentionally layered. A static build, backend suite, desktop lif
 - [Desktop workflow](docs/skills/desktop-app-workflow.md)
 - [Mesh pipeline](docs/MESH_PIPELINE.md)
 - [Viewport specification](docs/VIEWPORT_SPEC.md)
+- [Native viewport migration](docs/NATIVE_VIEWPORT_MIGRATION.md)
 - [Printer profiles](docs/PRINTER_PROFILES.md)
 - [QA and verification](docs/QA_ACCEPTANCE.md)
 - [Roadmap](docs/ROADMAP.md)

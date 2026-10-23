@@ -1,8 +1,7 @@
 'use client';
 
-import '@/lib/react-compat';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
@@ -64,11 +63,79 @@ const DEFAULT_SETTINGS: ViewportSettings = {
   gridMinorStepMm: 1,
 };
 
+function getTransformedBounds(bounds: BoundingBox3D, modelToFrame?: WorkingModel): BoundingBox3D {
+  const position = modelToFrame?.transform?.position_mm || [0, 0, 0];
+  const rotation = (modelToFrame?.transform?.rotation_deg || [0, 0, 0]).map((angle) => THREE.MathUtils.degToRad(angle));
+  const scale = modelToFrame?.transform?.scale_factors || [1, 1, 1];
+  const matrix = new THREE.Matrix4().compose(
+    new THREE.Vector3(position[0], position[1], position[2]),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2], 'XYZ')),
+    new THREE.Vector3(scale[0], scale[1], scale[2])
+  );
+  const box = new THREE.Box3();
+  for (const x of [bounds.min.x, bounds.max.x]) {
+    for (const y of [bounds.min.y, bounds.max.y]) {
+      for (const z of [bounds.min.z, bounds.max.z]) box.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(matrix));
+    }
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  return {
+    min: { x: box.min.x, y: box.min.y, z: box.min.z },
+    max: { x: box.max.x, y: box.max.y, z: box.max.z },
+    center: { x: center.x, y: center.y, z: center.z },
+    dimensions: { x: size.x, y: size.y, z: size.z },
+  };
+}
+
+function fitOrthographicZoom(
+  camera: THREE.OrthographicCamera,
+  bounds: BoundingBox3D,
+  position: THREE.Vector3,
+  target: THREE.Vector3,
+  padding: number
+): void {
+  const direction = target.clone().sub(position).normalize();
+  const up = Math.abs(direction.dot(new THREE.Vector3(0, 1, 0))) > 0.98
+    ? new THREE.Vector3(0, 0, -1)
+    : new THREE.Vector3(0, 1, 0);
+  const right = direction.clone().cross(up).normalize();
+  const screenUp = right.clone().cross(direction).normalize();
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  for (const x of [bounds.min.x, bounds.max.x]) {
+    for (const y of [bounds.min.y, bounds.max.y]) {
+      for (const z of [bounds.min.z, bounds.max.z]) {
+        const corner = new THREE.Vector3(x, z, -y);
+        const relative = corner.sub(target);
+        const projectedX = relative.dot(right);
+        const projectedY = relative.dot(screenUp);
+        minX = Math.min(minX, projectedX);
+        maxX = Math.max(maxX, projectedX);
+        minY = Math.min(minY, projectedY);
+        maxY = Math.max(maxY, projectedY);
+      }
+    }
+  }
+
+  const width = Math.max(maxX - minX, 1);
+  const height = Math.max(maxY - minY, 1);
+  const frustumWidth = camera.right - camera.left;
+  const frustumHeight = camera.top - camera.bottom;
+  camera.zoom = Math.min(frustumWidth / width, frustumHeight / height) / padding;
+  camera.updateProjectionMatrix();
+}
+
 export interface ViewportContainerProps {
+  projectId?: string;
   printer?: PrinterProfile;
   model?: WorkingModel | null;
   models?: WorkingModel[];
   activeModelId?: string | null;
+  selectedModelIds?: string[];
   modelBuffer?: ArrayBuffer | null;
   modelUrl?: string | null;
   activeTool?: CADTool;
@@ -79,10 +146,11 @@ export interface ViewportContainerProps {
   onCursorCoordinates?: (coords: { x: number; y: number; z: number }) => void;
   onTransformChange?: (transform: { position: [number, number, number]; rotation: [number, number, number]; scale: [number, number, number] }) => void;
   onDropFile?: (file: File) => void;
-  onSelectModel?: (modelId: string) => void;
+  onSelectModel?: (modelId: string, modifiers?: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => void;
+  onSelectAllModels?: () => void;
   onSetTool?: (tool: CADTool) => void;
   onDuplicateModel?: (modelId: string) => void | Promise<void>;
-  onDeleteModel?: (modelId: string) => void | Promise<void>;
+  onDeleteModel?: (modelId: string | string[]) => void | Promise<void>;
   onMirrorModel?: (modelId: string, axis: 'X' | 'Y' | 'Z') => void | Promise<void>;
 }
 
@@ -116,11 +184,123 @@ const BedRaycaster: React.FC<{
   );
 };
 
+type CameraTransition = { position: THREE.Vector3; target: THREE.Vector3 };
+
+type PersistedCameraState = {
+  version: 1;
+  projection: 'perspective' | 'orthographic';
+  position: [number, number, number];
+  target: [number, number, number];
+  zoom: number;
+};
+
+const cameraStorageKey = (projectId: string) => `outlaw-forge:viewport-camera:v1:${projectId}`;
+const appearanceStorageKey = (projectId: string) => `outlaw-forge:viewport-appearance:v1:${projectId}`;
+
+const readModelAppearance = (projectId: string): { hiddenIds: Set<string>; colors: Record<string, string> } => {
+  try {
+    const raw = window.localStorage.getItem(appearanceStorageKey(projectId));
+    if (!raw) return { hiddenIds: new Set(), colors: {} };
+    const value = JSON.parse(raw) as { hiddenIds?: unknown; colors?: unknown };
+    const hiddenIds = new Set(Array.isArray(value.hiddenIds)
+      ? value.hiddenIds.filter((id): id is string => typeof id === 'string')
+      : []);
+    const colors: Record<string, string> = {};
+    if (value.colors && typeof value.colors === 'object' && !Array.isArray(value.colors)) {
+      for (const [id, color] of Object.entries(value.colors)) {
+        if (typeof color === 'string' && /^#[\da-f]{6}$/i.test(color)) colors[id] = color;
+      }
+    }
+    return { hiddenIds, colors };
+  } catch {
+    return { hiddenIds: new Set(), colors: {} };
+  }
+};
+
+const isFiniteVector = (value: unknown): value is [number, number, number] =>
+  Array.isArray(value) && value.length === 3 && value.every((component) => typeof component === 'number' && Number.isFinite(component));
+
+const readCameraState = (projectId: string): PersistedCameraState | null => {
+  try {
+    const raw = window.localStorage.getItem(cameraStorageKey(projectId));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PersistedCameraState>;
+    if (
+      value.version !== 1 ||
+      (value.projection !== 'perspective' && value.projection !== 'orthographic') ||
+      !isFiniteVector(value.position) ||
+      !isFiniteVector(value.target) ||
+      typeof value.zoom !== 'number' || !Number.isFinite(value.zoom) || value.zoom <= 0
+    ) return null;
+    return value as PersistedCameraState;
+  } catch {
+    return null;
+  }
+};
+
+const CameraStateRestorer: React.FC<{
+  projectId: string;
+  pendingStateRef: React.MutableRefObject<{ projectId: string; state: PersistedCameraState } | null>;
+  restoredProjectIdRef: React.MutableRefObject<string | null>;
+  controlsRef: React.MutableRefObject<OrbitControlsImpl | null>;
+}> = ({ projectId, pendingStateRef, restoredProjectIdRef, controlsRef }) => {
+  useFrame(() => {
+    const pending = pendingStateRef.current;
+    if (!pending || pending.projectId !== projectId) return;
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const camera = controls.object;
+    if ((pending.state.projection === 'orthographic') !== (camera instanceof THREE.OrthographicCamera)) return;
+
+    camera.position.fromArray(pending.state.position);
+    if (camera instanceof THREE.OrthographicCamera) {
+      camera.zoom = pending.state.zoom;
+      camera.updateProjectionMatrix();
+    }
+    controls.target.fromArray(pending.state.target);
+    controls.update();
+    pendingStateRef.current = null;
+    restoredProjectIdRef.current = projectId;
+  });
+
+  return null;
+};
+
+const CameraTransitionController: React.FC<{
+  controlsRef: React.MutableRefObject<OrbitControlsImpl | null>;
+  transitionRef: React.MutableRefObject<CameraTransition | null>;
+}> = ({ controlsRef, transitionRef }) => {
+  useFrame((_, delta) => {
+    const transition = transitionRef.current;
+    const controls = controlsRef.current;
+    if (!transition || !controls) return;
+
+    const blend = 1 - Math.exp(-8 * delta);
+    controls.object.position.lerp(transition.position, blend);
+    controls.target.lerp(transition.target, blend);
+    controls.update();
+
+    if (
+      controls.object.position.distanceToSquared(transition.position) < 0.0001 &&
+      controls.target.distanceToSquared(transition.target) < 0.0001
+    ) {
+      controls.object.position.copy(transition.position);
+      controls.target.copy(transition.target);
+      transitionRef.current = null;
+      controls.update();
+    }
+  });
+
+  return null;
+};
+
 export const ViewportContainer: React.FC<ViewportContainerProps> = ({
+  projectId = '',
   printer = DEFAULT_PRINTER,
   model = null,
   models = [],
   activeModelId = null,
+  selectedModelIds = [],
   modelBuffer = null,
   modelUrl = null,
   activeTool = 'select',
@@ -132,6 +312,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   onTransformChange,
   onDropFile,
   onSelectModel,
+  onSelectAllModels,
   onSetTool,
   onDuplicateModel,
   onDeleteModel,
@@ -144,6 +325,10 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   const [layerHeightMm, setLayerHeightMm] = useState<number>(0.20);
   const [showExclusionZone, setShowExclusionZone] = useState<boolean>(true);
   const [modelMetrics, setModelMetrics] = useState<MeshMetrics | null>(null);
+  const [metricsByModelId, setMetricsByModelId] = useState<Record<string, MeshMetrics>>({});
+  const [hiddenModelIds, setHiddenModelIds] = useState<Set<string>>(() => new Set());
+  const [modelColors, setModelColors] = useState<Record<string, string>>({});
+  const [appearanceLoadedProjectId, setAppearanceLoadedProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isGizmoDragging, setIsGizmoDragging] = useState<boolean>(false);
@@ -161,29 +346,131 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
   const [contextMenu, setContextMenu] = useState<{ modelId: string; x: number; y: number } | null>(null);
 
   const controlsRef = useRef<OrbitControlsImpl>(null);
+  const pendingCameraStateRef = useRef<{ projectId: string; state: PersistedCameraState } | null>(null);
+  const restoredCameraProjectRef = useRef<string | null>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const cameraTransitionRef = useRef<CameraTransition | null>(null);
+  const rightPointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const rightPointerDraggedRef = useRef(false);
+
+  useEffect(() => {
+    if (!projectId) {
+      setHiddenModelIds(new Set());
+      setModelColors({});
+      setAppearanceLoadedProjectId(null);
+      return;
+    }
+    const appearance = readModelAppearance(projectId);
+    setHiddenModelIds(appearance.hiddenIds);
+    setModelColors(appearance.colors);
+    setAppearanceLoadedProjectId(projectId);
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || appearanceLoadedProjectId !== projectId) return;
+    try {
+      window.localStorage.setItem(appearanceStorageKey(projectId), JSON.stringify({
+        hiddenIds: [...hiddenModelIds],
+        colors: modelColors,
+      }));
+    } catch {
+      // Object appearance remains usable for the current session when storage is unavailable.
+    }
+  }, [appearanceLoadedProjectId, hiddenModelIds, modelColors, projectId]);
+
+  useEffect(() => {
+    cameraTransitionRef.current = null;
+    restoredCameraProjectRef.current = null;
+    pendingCameraStateRef.current = null;
+    if (!projectId) {
+      setSettings((current) => ({ ...current, cameraProjection: DEFAULT_SETTINGS.cameraProjection }));
+      return;
+    }
+
+    const saved = readCameraState(projectId);
+    setSettings((current) => ({
+      ...current,
+      cameraProjection: saved?.projection ?? DEFAULT_SETTINGS.cameraProjection,
+    }));
+    if (saved) pendingCameraStateRef.current = { projectId, state: saved };
+    else restoredCameraProjectRef.current = projectId;
+  }, [projectId]);
+
+  const persistCameraState = useCallback(() => {
+    if (!projectId || restoredCameraProjectRef.current !== projectId) return;
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const camera = controls.object;
+    const state: PersistedCameraState = {
+      version: 1,
+      projection: camera instanceof THREE.OrthographicCamera ? 'orthographic' : 'perspective',
+      position: camera.position.toArray() as [number, number, number],
+      target: controls.target.toArray() as [number, number, number],
+      zoom: camera.zoom,
+    };
+    try {
+      window.localStorage.setItem(cameraStorageKey(projectId), JSON.stringify(state));
+    } catch {
+      // Camera navigation remains available when browser storage is disabled or full.
+    }
+  }, [projectId]);
+
+  const transitionCameraTo = useCallback((position: THREE.Vector3, target: THREE.Vector3) => {
+    cameraTransitionRef.current = { position: position.clone(), target: target.clone() };
+  }, []);
+
+  useEffect(() => {
+    if (!activeModelId || !onDeleteModel) return;
+
+    const deleteSelectedModel = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (
+        target.isContentEditable ||
+        target.matches('input, textarea, select, [role="textbox"]')
+      )) return;
+
+      event.preventDefault();
+      const idsToDelete = selectedModelIds.includes(activeModelId) && selectedModelIds.length > 1
+        ? selectedModelIds
+        : [activeModelId];
+      void onDeleteModel(idsToDelete);
+    };
+
+    window.addEventListener('keydown', deleteSelectedModel);
+    return () => window.removeEventListener('keydown', deleteSelectedModel);
+  }, [activeModelId, onDeleteModel, selectedModelIds]);
+
+  useEffect(() => {
+    const handleSelectionHotkeys = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && (
+        target.isContentEditable ||
+        target.matches('input, textarea, select, [role="textbox"]')
+      )) return;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && models.length > 0) {
+        event.preventDefault();
+        onSelectAllModels?.();
+      } else if (event.key === 'Escape' && selectedModelIds.length > 1 && activeModelId) {
+        onSelectModel?.(activeModelId);
+      }
+    };
+
+    window.addEventListener('keydown', handleSelectionHotkeys);
+    return () => window.removeEventListener('keydown', handleSelectionHotkeys);
+  }, [models, selectedModelIds, activeModelId, onSelectAllModels, onSelectModel]);
 
   const openModelContextMenu = useCallback((modelId: string, clientX: number, clientY: number) => {
+    if (rightPointerDraggedRef.current) return;
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     if (!rect) return;
     // Keep the full action list inside the viewport even when the model is
     // close to the right or bottom edge of the canvas.
-    const x = Math.max(8, Math.min(clientX - rect.left, rect.width - 220));
-    const y = Math.max(8, Math.min(clientY - rect.top, rect.height - 390));
+    const x = Math.max(8, Math.min(clientX - rect.left, rect.width - 240));
+    const y = Math.max(8, Math.min(clientY - rect.top, rect.height - 470));
     setContextMenu({ modelId, x, y });
   }, []);
-
-  const handleContextAction = useCallback((action: ModelContextAction) => {
-    const selectedId = contextMenu?.modelId;
-    if (!selectedId) return;
-    setContextMenu(null);
-    if (action === 'duplicate') return void onDuplicateModel?.(selectedId);
-    if (action === 'delete') return void onDeleteModel?.(selectedId);
-    if (action.startsWith('mirror_')) {
-      return void onMirrorModel?.(selectedId, action.slice(-1).toUpperCase() as 'X' | 'Y' | 'Z');
-    }
-    onSetTool?.(action as CADTool);
-  }, [contextMenu, onDeleteModel, onDuplicateModel, onMirrorModel, onSetTool]);
 
   const bedWidth = printer.build_width_mm || 256;
   const bedDepth = printer.build_depth_mm || 256;
@@ -198,6 +485,46 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
     }),
     [bedWidth, bedDepth, bedHeight]
   );
+
+  const activeId = activeModelId || model?.id || null;
+  const activeMetrics = activeId ? metricsByModelId[activeId] || null : modelMetrics;
+  const contextModelHidden = contextMenu ? hiddenModelIds.has(contextMenu.modelId) : false;
+  const contextModelColor = contextMenu ? modelColors[contextMenu.modelId] : undefined;
+
+  const setModelHidden = useCallback((modelId: string) => {
+    setHiddenModelIds((current) => {
+      const next = new Set(current);
+      if (next.has(modelId)) next.delete(modelId);
+      else next.add(modelId);
+      return next;
+    });
+  }, []);
+
+  const setModelColor = useCallback((modelId: string, color: string | null) => {
+    setModelColors((current) => {
+      if (color === null) {
+        if (!(modelId in current)) return current;
+        const next = { ...current };
+        delete next[modelId];
+        return next;
+      }
+      if (!/^#[\da-f]{6}$/i.test(color)) return current;
+      return { ...current, [modelId]: color };
+    });
+  }, []);
+
+  const handleContextAction = useCallback((action: ModelContextAction) => {
+    const selectedId = contextMenu?.modelId;
+    if (!selectedId) return;
+    setContextMenu(null);
+    if (action === 'toggle_visibility') return setModelHidden(selectedId);
+    if (action === 'duplicate') return void onDuplicateModel?.(selectedId);
+    if (action === 'delete') return void onDeleteModel?.(selectedId);
+    if (action.startsWith('mirror_')) {
+      return void onMirrorModel?.(selectedId, action.slice(-1).toUpperCase() as 'X' | 'Y' | 'Z');
+    }
+    onSetTool?.(action as CADTool);
+  }, [contextMenu, onDeleteModel, onDuplicateModel, onMirrorModel, onSetTool, setModelHidden]);
 
   // Drag and drop 3D file handler
   const handleDragOver = (e: React.DragEvent) => {
@@ -225,7 +552,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
       } else if (['stl', 'obj', 'glb', 'gltf', '3mf'].includes(ext || '')) {
         onDropFile?.(droppedFile);
       } else {
-        setErrorMessage(`Unsupported file format '.${ext}'. Drop STL, OBJ, GLB, or G-code files.`);
+        setErrorMessage(`Unsupported file format '.${ext}'. Drop STL, OBJ, GLB, 3MF, or G-code files.`);
       }
     }
   };
@@ -236,7 +563,9 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
       setActiveView(view);
       if (!controlsRef.current) return;
 
-      const boundsToFrame = modelMetrics?.boundingBox || defaultBounds;
+      const boundsToFrame = activeMetrics?.boundingBox
+        ? getTransformedBounds(activeMetrics.boundingBox, models.find((item) => item.id === activeId) || model || undefined)
+        : defaultBounds;
       const { position, target } = calculatePresetCameraView(
         view,
         boundsToFrame,
@@ -244,23 +573,26 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
         view === 'isometric' ? 1.6 : 1.4
       );
 
-      controlsRef.current.object.position.copy(position);
-      controlsRef.current.target.copy(target);
-      controlsRef.current.update();
+      const camera = controlsRef.current.object;
+      if (camera instanceof THREE.OrthographicCamera) {
+        fitOrthographicZoom(camera, boundsToFrame, position, target, view === 'isometric' ? 1.6 : 1.4);
+      }
+
+      transitionCameraTo(position, target);
     },
-    [modelMetrics, defaultBounds]
+    [activeMetrics, activeId, models, model, defaultBounds, transitionCameraTo]
   );
 
   // Frame active model ($F$ shortcut)
   const handleFrameSelection = useCallback(() => {
     if (!controlsRef.current) return;
-    const boundsToFrame = modelMetrics?.boundingBox || defaultBounds;
+    const boundsToFrame = activeMetrics?.boundingBox
+      ? getTransformedBounds(activeMetrics.boundingBox, models.find((item) => item.id === activeId) || model || undefined)
+      : defaultBounds;
     const { position, target } = calculatePresetCameraView('isometric', boundsToFrame, 45, 1.3);
 
-    controlsRef.current.object.position.copy(position);
-    controlsRef.current.target.copy(target);
-    controlsRef.current.update();
-  }, [modelMetrics, defaultBounds]);
+    transitionCameraTo(position, target);
+  }, [activeMetrics, activeId, models, model, defaultBounds, transitionCameraTo]);
 
   const resetCamera = useCallback(() => {
     handlePresetView('isometric');
@@ -298,11 +630,12 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleFrameSelection, resetCamera, handlePresetView]);
 
-  const handleModelLoaded = (geom: THREE.BufferGeometry, metrics: MeshMetrics) => {
-    setModelMetrics(metrics);
+  const handleModelLoaded = (modelId: string | undefined, geom: THREE.BufferGeometry, metrics: MeshMetrics) => {
+    if (!modelId || modelId === activeId) setModelMetrics(metrics);
+    if (modelId) setMetricsByModelId((current) => ({ ...current, [modelId]: metrics }));
     setLoading(false);
     setErrorMessage(null);
-    if (onModelMetrics) {
+    if ((!modelId || modelId === activeId) && onModelMetrics) {
       onModelMetrics(metrics);
     }
   };
@@ -325,7 +658,23 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      onContextMenu={(event) => event.preventDefault()}
+      onPointerDown={(event) => {
+        if (event.button !== 2) return;
+        rightPointerStartRef.current = { x: event.clientX, y: event.clientY };
+        rightPointerDraggedRef.current = false;
+      }}
+      onPointerMove={(event) => {
+        const start = rightPointerStartRef.current;
+        if (!start || (event.buttons & 2) === 0) return;
+        const dx = event.clientX - start.x;
+        const dy = event.clientY - start.y;
+        if (dx * dx + dy * dy > 16) rightPointerDraggedRef.current = true;
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        rightPointerStartRef.current = null;
+        rightPointerDraggedRef.current = false;
+      }}
       className={`relative w-full h-full min-h-[500px] overflow-hidden bg-[#090d16] select-none ${className}`}
     >
       {/* 3D Canvas Scene */}
@@ -363,12 +712,27 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
           makeDefault
           target={[0, 25, 0]}
           enabled={!isGizmoDragging}
+          mouseButtons={{
+            RIGHT: THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.PAN,
+          }}
           enableDamping
           dampingFactor={0.08}
+          zoomToCursor
+          onChange={persistCameraState}
           minDistance={5}
           maxDistance={3000}
           screenSpacePanning
+          onStart={() => { cameraTransitionRef.current = null; }}
         />
+
+        <CameraStateRestorer
+          projectId={projectId}
+          pendingStateRef={pendingCameraStateRef}
+          restoredProjectIdRef={restoredCameraProjectRef}
+          controlsRef={controlsRef}
+        />
+        <CameraTransitionController controlsRef={controlsRef} transitionRef={cameraTransitionRef} />
 
         <SceneLights />
 
@@ -390,6 +754,7 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
           {models && models.length > 1 ? (
             models.map((m) => {
               const isSelected = m.id === (activeModelId || model?.id);
+              const isInSelection = selectedModelIds.includes(m.id) || isSelected;
               return (
                 <ModelRenderer
                   key={m.id}
@@ -400,13 +765,14 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
                   layerHeightMm={layerHeightMm}
                   slicePlaneOrigin={slicePlaneOrigin}
                   slicePlaneNormal={slicePlaneNormal}
-                  showBoundingBox={isSelected ? settings.showBoundingBoxes : false}
+                  showBoundingBox={isInSelection ? settings.showBoundingBoxes : false}
                   showWireframe={isSelected ? settings.showWireframe : false}
                   isSelected={isSelected}
-                  color={isSelected ? '#38bdf8' : '#64748b'}
-                  onModelLoaded={isSelected ? handleModelLoaded : undefined}
+                  visible={!hiddenModelIds.has(m.id)}
+                  color={modelColors[m.id] ?? (isSelected ? '#38bdf8' : isInSelection ? '#22d3ee' : '#64748b')}
+                  onModelLoaded={(geom, metrics) => handleModelLoaded(m.id, geom, metrics)}
                   onTransformChange={isSelected ? onTransformChange : undefined}
-                  onSelect={() => onSelectModel?.(m.id)}
+                  onSelect={(modifiers) => onSelectModel?.(m.id, modifiers)}
                   onContextMenu={(x, y) => openModelContextMenu(m.id, x, y)}
                   onGizmoDragging={(dragging) => isSelected && setIsGizmoDragging(dragging)}
                   onError={handleModelError}
@@ -427,9 +793,11 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
               showBoundingBox={settings.showBoundingBoxes}
               showWireframe={settings.showWireframe}
               isSelected={true}
-              onModelLoaded={handleModelLoaded}
+              visible={!model?.id || !hiddenModelIds.has(model.id)}
+              color={model?.id ? modelColors[model.id] ?? '#38bdf8' : '#38bdf8'}
+              onModelLoaded={(geom, metrics) => handleModelLoaded(model?.id, geom, metrics)}
               onTransformChange={onTransformChange}
-              onSelect={() => model?.id && onSelectModel?.(model.id)}
+              onSelect={(modifiers) => model?.id && onSelectModel?.(model.id, modifiers)}
               onContextMenu={(x, y) => model?.id && openModelContextMenu(model.id, x, y)}
               onGizmoDragging={(dragging) => setIsGizmoDragging(dragging)}
               onError={handleModelError}
@@ -477,13 +845,23 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
         </group>
 
         {/* OrcaSlicer Orientation Gizmo / View Cube */}
-        <OrientationGizmo alignment="top-right" margin={[70, 70]} />
+        <OrientationGizmo
+          alignment="top-right"
+          margin={[70, 70]}
+          onPresetView={handlePresetView}
+        />
       </Canvas>
 
       {contextMenu && (
         <ModelContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
+          hidden={contextModelHidden}
+          color={contextModelColor}
+          onColorChange={(color) => {
+            setModelColor(contextMenu.modelId, color);
+            setContextMenu(null);
+          }}
           onAction={handleContextAction}
           onClose={() => setContextMenu(null)}
         />
@@ -749,6 +1127,27 @@ export const ViewportContainer: React.FC<ViewportContainerProps> = ({
           </button>
         </div>
       </div>
+
+      {hiddenModelIds.size > 0 && (
+        <div className="absolute top-3 right-4 z-20 flex max-w-[min(420px,45%)] flex-wrap items-center justify-end gap-1.5 pointer-events-auto">
+          {[...hiddenModelIds].map((hiddenId) => {
+            const hiddenModel = models.find((item) => item.id === hiddenId);
+            const label = hiddenModel?.filename || hiddenId.slice(0, 8);
+            return (
+              <button
+                key={hiddenId}
+                type="button"
+                onClick={() => setModelHidden(hiddenId)}
+                className="flex items-center gap-1.5 rounded border border-slate-700 bg-slate-950/90 px-2 py-1 text-[10px] font-mono text-slate-300 hover:border-cyan-500 hover:text-cyan-200"
+                title={`Show ${label}`}
+              >
+                <Eye className="h-3 w-3" />
+                Show {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* OrcaSlicer Lay on Face Active Instructions Banner */}
       {activeTool === 'lay_flat' && (

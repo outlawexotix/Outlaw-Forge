@@ -7,7 +7,7 @@ import { getTriangleFromFaceIndex, calculateRotationToBed } from '@three-tools';
 
 export interface LayOnFaceToolProps {
   geometry: THREE.BufferGeometry | null;
-  meshRef: React.RefObject<THREE.Mesh>;
+  meshRef: React.RefObject<THREE.Mesh | null>;
   enabled: boolean;
   onOrientToFace: (rotationDeg: [number, number, number]) => void;
 }

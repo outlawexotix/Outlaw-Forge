@@ -1,36 +1,42 @@
-# Roadmap
+# Outlaw Forge roadmap
 
-Outlaw Forge has moved from a browser prototype to an implemented local desktop architecture. This roadmap separates the verified baseline from release engineering and future slicing capabilities.
+This roadmap distinguishes the implemented main workbench from the separate native viewport foundation and from capabilities that remain future work. A feature is considered implemented only in the application and workflow named below.
 
-## Implemented baseline
+## Main workbench baseline
 
-- Tauri 2 desktop shell with a static Next.js and Three.js workbench.
-- Supervised FastAPI geometry sidecar using a dynamic loopback port.
-- Windows Job Object lifecycle management to prevent orphaned sidecar processes.
-- Native menus, keyboard accelerators, dialogs, permissions, and STL/OBJ/3MF associations.
-- SQLite-backed projects, printer profiles, working model revisions, and operation history.
-- Print-readiness cockpit for overhangs, thin walls, watertightness, printer fit, and material estimates.
-- Deterministic transform, repair, hollow, slice, connector, arrangement, infill, and reinforcement workflows.
-- Interactive viewport inspection, layer and overhang modes, build-plate controls, and direct model manipulation.
-- OrcaSlicer-oriented 3MF export, MaskSmith, and FigureForge workflows.
-- PyInstaller and Tauri packaging automation with dry-run preflight checks.
-- Backend, static export, supervisor, lifecycle, automation, and master E2E verification suites.
+- Tauri 2 desktop shell hosting the static Next.js and Three.js workbench.
+- FastAPI sidecar with dynamic loopback port allocation and supervised shutdown.
+- SQLite projects, printer profiles, source files, derived working models, and operation history.
+- Mesh import, inspection, printer-fit and print-readiness analysis, deterministic repair and transform operations, planar slicing, and export workflows.
+- Viewport model selection, multi-selection, transform and display controls, camera presets, persisted camera and appearance state, and build-plate interaction.
+- OrcaSlicer-oriented 3MF packaging plus MaskSmith and FigureForge workflows.
+- Desktop development, packaging preflight, sidecar lifecycle, and acceptance automation.
 
-## Current priorities
+See the [main README](../README.md) and [QA guide](./QA_ACCEPTANCE.md) for current commands and verification layers.
 
-1. Upgrade the Next.js dependency line and remove current production audit findings.
-2. Produce repeatable signed Windows installer artifacts from a clean build host.
-3. Add browser-level interaction tests for the print-readiness cockpit and advanced geometry drawer.
-4. Improve native open/save integration so all import and export paths use desktop dialogs.
-5. Add migration and backup tooling for local SQLite projects and derived mesh storage.
-6. Expand printer profiles and validate non-rectangular build volumes.
+## Native viewport foundation
+
+The Qt Quick 3D application in `apps/native/` is a separate experimental executable. It currently provides a Z-up millimetre scene; STL/OBJ and limited 3MF viewing; scene selection, transforms, display and inspection controls; local mesh analysis and repair; and service-backed planar slicing for STL and OBJ. The slice command uses the existing FastAPI project/import/slice/file routes and reports watertightness for each returned half.
+
+This executable is not yet included in the Tauri package. Its current operation boundary, API dependency, format limits, and remaining migration work are listed in [Native viewport migration](./NATIVE_VIEWPORT_MIGRATION.md).
+
+## Current engineering priorities
+
+1. Maintain the React 19, Next.js, and React Three Fiber dependency line with clean production builds and dependency audits.
+2. Add browser-level interaction coverage for multi-selection, camera persistence, display state, and print-readiness workflows.
+3. Exercise the native slice command against a running local API with representative STL and OBJ assets, including open/non-manifold results and transformed instances.
+4. Define project and revision persistence for the Qt app before adding native project save/reopen flows.
+5. Continue native command migration one operation at a time, preserving API contracts and source immutability.
+6. Produce repeatable signed Windows installer artifacts and validate first launch and file associations on a clean machine.
 
 ## Deferred capabilities
 
-- Direct G-code generation and full slicer-engine integration.
+- Integrating the Qt viewport into the Tauri application or making it the default desktop renderer.
+- Native persistence and project reopening for the Qt application.
+- Direct G-code generation, toolpath editing, and slicer-engine integration.
 - Automatic support generation and toolpath optimization.
-- Signed auto-update distribution for desktop releases.
-- Multi-user server deployment and authentication.
-- Provider-backed advisory AI for reference analysis and print diagnosis.
+- Signed automatic update distribution and a public installer release process.
+- Multi-user hosting, authentication, and remote project collaboration.
+- AI-driven geometry changes. Any future AI feature must remain advisory and require explicit user action before deterministic operations run.
 
-Roadmap items are proposals until code, contracts, and verification land together. See the [QA guide](./QA_ACCEPTANCE.md) for completion criteria.
+These items are proposals until implementation, contracts, and relevant verification land together.

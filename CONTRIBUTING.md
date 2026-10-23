@@ -1,6 +1,6 @@
 # Contributing to Outlaw Forge
 
-Outlaw Forge is a TypeScript/Python monorepo. Contributions are welcome when they keep geometry deterministic, preserve source assets, and include the verification needed to explain the change.
+Outlaw Forge is a TypeScript, Python, C++, and QML monorepo. The main desktop workbench is Tauri + Next.js + FastAPI; `apps/native/` is a separate experimental Qt Quick 3D application. Contributions should keep geometry deterministic, preserve source assets, and include the verification needed to explain the change.
 
 ## Development flow
 
@@ -10,7 +10,8 @@ Outlaw Forge is a TypeScript/Python monorepo. Contributions are welcome when the
 4. Run `npm run test:backend`, `npm run lint`, and `npm run build`.
 5. If the API behavior changed, run the live health and critical-workflow checks as well.
 6. For desktop shell, sidecar, static export, or packaging changes, run `python tests/verify_m5_e2e_full.py`.
-7. Open a pull request with the intent, verification performed, and any known limitations.
+7. For changes under `apps/native/`, build the Qt target and run its CTest suite using the commands in `apps/native/README.md`.
+8. Open a pull request with the intent, verification performed, and any known limitations.
 
 ## Geometry and data rules
 
