@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { STLLoader, OBJLoader, GLTFLoader } from 'three-stdlib';
+import { STLLoader, OBJLoader, GLTFLoader, ThreeMFLoader } from 'three-stdlib';
 
 export type SupportedFormat = 'stl' | 'obj' | 'gltf' | 'glb' | '3mf';
 
@@ -125,6 +125,13 @@ export async function parseMeshBuffer(
           }
         );
       });
+    }
+
+    case '3mf': {
+      const loader = new ThreeMFLoader();
+      const group = loader.parse(buffer);
+      group.updateMatrixWorld(true);
+      return mergeObject3DGeometries(group);
     }
 
     default:

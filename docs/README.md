@@ -7,12 +7,13 @@ This directory documents the product that exists in the repository today. Plans 
 - [Getting started](./getting-started.md) - run the desktop workflow, browser workflow, and packaging preflight.
 - [Architecture](./ARCHITECTURE.md) - applications, packages, storage boundaries, and engineering rules.
 - [Desktop workflow](./skills/desktop-app-workflow.md) - Tauri shell, sidecar supervision, and package construction.
+- [Native viewport migration](./NATIVE_VIEWPORT_MIGRATION.md) - scope and status of the separate Qt Quick 3D application.
 - [Mesh pipeline](./MESH_PIPELINE.md) - units, coordinate spaces, loaders, and deterministic geometry calculations.
 
 ## Product references
 
 - [Viewport specification](./VIEWPORT_SPEC.md) - camera, bed, gizmo, and interaction behavior.
-- [Printer profiles](./PRINTER_PROFILES.md) - build volumes, kinematics, and profile schema.
+- [Printer profiles](./PRINTER_PROFILES.md) - current profile fields, seeded local values, and validation limits.
 - [AI boundaries](./AI_ARCHITECTURE.md) - advisory AI contracts and the deterministic geometry boundary.
 
 ## Quality and planning

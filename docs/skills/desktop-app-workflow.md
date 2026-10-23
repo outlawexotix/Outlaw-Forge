@@ -16,6 +16,8 @@ At startup, the Rust shell selects an available loopback port, launches the pack
 
 The desktop shell also provides native menus, keyboard accelerators, file-open handling, file associations, and native file dialogs. Browser development remains supported for fast UI work.
 
+The repository also contains a separate Qt Quick 3D viewport under `apps/native/`. It is an experimental executable, not part of the Tauri bundle. Its local STL/OBJ/limited 3MF viewing and service-backed STL/OBJ slice command have a separate build and migration guide. Do not describe those native features as available in the Tauri app until they are integrated there.
+
 ## Implementation map
 
 | Area | Source |

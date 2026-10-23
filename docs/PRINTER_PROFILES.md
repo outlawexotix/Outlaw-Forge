@@ -1,128 +1,69 @@
-# Outlaw Forge — 3D Printer Profiles & Kinematics Specification
+# Printer profiles
 
-## 1. Kinematics Classification & Coordinate Framing
+Printer profiles store the build dimensions and nozzle size used by project preparation and printer-fit checks. The current profile contract is deliberately small. It does not model firmware, kinematics, bed shape, toolhead travel, temperature limits, speed, acceleration, or keep-out regions, and it does not generate machine instructions.
 
-Outlaw Forge supports all major additive manufacturing motion kinematics systems. Each printer profile dictates the build volume envelope, coordinate frame origin, and toolhead travel boundaries.
+## Current profile fields
 
-```mermaid
-flowchart TD
-    A["Printer Profile Definition"] --> B{"Kinematics Type"}
-    B -->|"CoreXY / Cartesian"| C["Rectangular Build Plate (X, Y, Z mm)"]
-    B -->|"Delta Kinematics"| D["Cylindrical Build Plate (Radius, Height mm)"]
-    B -->|"IDEX Dual Extruder"| E["Independent Toolhead Overlap Envelopes"]
-    C --> F["Front-Left Origin (0,0,0) or Center Origin (0,0,0)"]
-    D --> G["Bed Center Origin (0,0,0)"]
-    F --> H["3D Viewport Envelope & Slicer Engine"]
-    G --> H
-    E --> H
-```
+The FastAPI `PrinterProfile` model in `apps/api/app/models/printer.py` is the source of truth.
 
----
+| Field | Meaning |
+| --- | --- |
+| `id` | Local profile identifier assigned by the service |
+| `manufacturer` | Printer manufacturer |
+| `model` | Printer model name |
+| `build_width_mm` | X build dimension in millimetres; must be greater than zero |
+| `build_depth_mm` | Y build dimension in millimetres; must be greater than zero |
+| `build_height_mm` | Z build dimension in millimetres; must be greater than zero |
+| `nozzle_diameter_mm` | Nozzle diameter in millimetres; must be greater than zero |
+| `notes` | Optional descriptive text |
+| `created_at` | Service timestamp when available |
 
-## 2. Supported Kinematics Architectures
+These rectangular dimensions are used by the workbench's build-volume checks and viewport envelope. A profile is user-editable data and should be checked against the manufacturer's current documentation before relying on a pass/fail result. It is not a full printer or slicer configuration.
 
-| Kinematics Type | Motion Mechanism | Origin Convention | Typical Machines |
-| :--- | :--- | :--- | :--- |
-| **CoreXY** | Stationary XY stepper motors driving crossed timing belts; Z-bed or flying gantry | Front-Left $(0,0,0)$ | Bambu Lab X1C/P1S, Voron 2.4/Trident, RatRig V-Core, Creality K1 |
-| **Cartesian (Bed Slinger)** | Direct X on gantry, Y moves bed forward/back, Z elevates | Front-Left $(0,0,0)$ | Prusa MK4/MK3S+, Creality Ender 3, Bambu Lab A1 |
-| **Delta** | 3 synchronized vertical towers with parallel diagonal pushrods | Center $(0,0,0)$ | Flsun V400/S1, Rostock Max, Kossel |
-| **IDEX** | Two independent X-carriages sharing Y and Z axes | Front-Left $(0,0,0)$ | Snapmaker J1, BCN3D Sigma, Tenlog |
+## Seeded local profiles
 
----
+On database initialization, the API seeds these starter values if the profiles are absent:
 
-## 3. Built-In Verified Printer Profiles
+| Manufacturer | Model | Build width x depth x height (mm) | Nozzle (mm) |
+| --- | --- | ---: | ---: |
+| Creality | Ender-3 | 220 x 220 x 250 | 0.4 |
+| Creality | Ender-3 S1 | 220 x 220 x 270 | 0.4 |
+| Bambu Lab | X1-Carbon | 256 x 256 x 256 | 0.4 |
+| Prusa | Original Prusa MK4 | 250 x 210 x 220 | 0.4 |
+| Voron | Voron 2.4 350 | 350 x 350 x 350 | 0.4 |
+| Elegoo | Neptune 4 Pro | 225 x 225 x 265 | 0.4 |
 
-### 3.1 Bambu Lab X1-Carbon / P1S / P1P
-- **Kinematics**: CoreXY
-- **Build Dimensions**: $256 \times 256 \times 256 \text{ mm}$
-- **Origin**: Front-Left $(0,0,0)$
-- **Nozzle Diameters**: $0.2, 0.4, 0.6, 0.8 \text{ mm}$
-- **Max Toolhead Speed**: $500 \text{ mm/s}$
-- **Max Toolhead Acceleration**: $20,000 \text{ mm/s}^2$
-- **Max Volumetric Flow**: $32 \text{ mm}^3/\text{s}$ (Standard High-Flow Nozzle)
-- **Keep-out Zones**:
-  - Purge chute / waste collector: $X: [18, 64], Y: [248, 256]$
-  - Bed leveling sensor wipe area: $X: [120, 136], Y: [250, 256]$
+These are starter database records from `apps/api/app/db/database.py`, not machine-tested profiles. Confirm the build dimensions for the exact printer variant and configuration in use.
 
-### 3.2 Prusa MK4 / MK3S+
-- **Kinematics**: Cartesian (Bed Slinger)
-- **Build Dimensions**: $250 \times 210 \times 220 \text{ mm}$
-- **Origin**: Front-Left $(0,0,0)$
-- **Nozzle Diameters**: $0.4 \text{ mm}$ (Standard Nextruder)
-- **Max Speed**: $200 \text{ mm/s}$
-- **Max Acceleration**: $4,000 \text{ mm/s}^2$
+## API operations
 
-### 3.3 Voron 2.4 (350mm Variant)
-- **Kinematics**: Flying Gantry CoreXY (4 independent Z-steppers)
-- **Build Dimensions**: $350 \times 350 \times 350 \text{ mm}$
-- **Origin**: Front-Left $(0,0,0)$
-- **Nozzle Diameters**: $0.4, 0.6 \text{ mm}$ (Dragon HF / Rapido)
-- **Max Speed**: $600 \text{ mm/s}$
-- **Max Acceleration**: $30,000 \text{ mm/s}^2$
+The local API exposes profile listing, creation, and lookup:
 
-### 3.4 Flsun V400
-- **Kinematics**: Delta (Tri-Tower)
-- **Build Dimensions**: $\varnothing 300 \times 410 \text{ mm}$ (Diameter $\times$ Height)
-- **Origin**: Bed Center $(0,0,0)$
-- **Max Speed**: $400 \text{ mm/s}$
-- **Max Acceleration**: $10,000 \text{ mm/s}^2$
+- `GET /api/v1/printers`
+- `POST /api/v1/printers`
+- `GET /api/v1/printers/{printer_id}`
 
----
-
-## 4. Printer Profile JSON Schema
+Example create body:
 
 ```json
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "PrinterProfile",
-  "type": "object",
-  "required": [
-    "id",
-    "manufacturer",
-    "model",
-    "build_width_mm",
-    "build_depth_mm",
-    "build_height_mm",
-    "nozzle_diameter_mm"
-  ],
-  "properties": {
-    "id": { "type": "string", "example": "bambu-x1c" },
-    "manufacturer": { "type": "string", "example": "Bambu Lab" },
-    "model": { "type": "string", "example": "X1-Carbon" },
-    "kinematics": { "type": "string", "enum": ["corexy", "cartesian", "delta", "idex"], "default": "corexy" },
-    "origin_position": { "type": "string", "enum": ["front_left", "center"], "default": "front_left" },
-    "build_width_mm": { "type": "number", "minimum": 10.0, "maximum": 2000.0 },
-    "build_depth_mm": { "type": "number", "minimum": 10.0, "maximum": 2000.0 },
-    "build_height_mm": { "type": "number", "minimum": 10.0, "maximum": 2000.0 },
-    "nozzle_diameter_mm": { "type": "number", "default": 0.4 },
-    "heated_bed": { "type": "boolean", "default": true },
-    "max_bed_temp_c": { "type": "number", "default": 120 },
-    "max_nozzle_temp_c": { "type": "number", "default": 300 },
-    "max_speed_mms": { "type": "number", "default": 500 },
-    "max_accel_mms2": { "type": "number", "default": 20000 },
-    "keep_out_zones": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "name": { "type": "string" },
-          "min": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
-          "max": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
-        }
-      }
-    }
-  }
+  "manufacturer": "Example",
+  "model": "Printer Model",
+  "build_width_mm": 220,
+  "build_depth_mm": 220,
+  "build_height_mm": 250,
+  "nozzle_diameter_mm": 0.4,
+  "notes": "Verify dimensions against the machine configuration."
 }
 ```
 
----
+Profiles are stored in the local SQLite database. They are not fetched from a vendor catalog or automatically updated.
 
-## 5. Viewport Rendering Integration
+## Current limits
 
-When an active printer profile is loaded in `ViewportContainer`:
-1. **Bed Geometry**: The build sheet mesh is sized to `[build_width_mm, build_depth_mm, 1]`.
-2. **Dual-Frequency Grid**:
-   - Minor subdivisions rendered at $1.0 \text{ mm}$ intervals.
-   - Major structural sections rendered at $10.0 \text{ mm}$ intervals with high-contrast accent lines.
-3. **Print Volume Envelope**: A translucent bounding box wireframe is rendered at `[build_width_mm, build_depth_mm, build_height_mm]` centered at $(W/2, D/2, H/2)$ in slicer space.
-4. **Origin Triad**: Rendered with standard CAD axis colors: $+X$ (Red), $+Y$ (Green), $+Z$ (Blue).
+- The profile schema is rectangular and has no center-origin or cylindrical-bed fields.
+- Fit validation uses the profile dimensions; it does not simulate a specific motion system or toolhead collision envelope.
+- No profile field is used to emit G-code or configure an external slicer.
+- The native Qt viewport does not yet have native printer-profile persistence or printer-aware scene setup.
+
+Printer profile implementation lives in `apps/api/app/models/printer.py`, `apps/api/app/repositories/printer_repo.py`, and `apps/api/app/db/database.py`. Keep any schema changes synchronized with `packages/shared/types/api.ts`.

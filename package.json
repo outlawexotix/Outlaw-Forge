@@ -1,7 +1,7 @@
 {
   "name": "outlaw-forge-monorepo",
   "version": "0.1.0",
-  "description": "Local-first desktop workbench for deterministic 3D-print mesh inspection, repair, preparation, and export.",
+  "description": "Local-first 3D-print preparation workbench with a Tauri and Three.js desktop app, FastAPI geometry sidecar, and experimental Qt native viewport.",
   "private": true,
   "workspaces": [
     "apps/*",

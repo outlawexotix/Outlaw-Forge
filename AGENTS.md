@@ -8,7 +8,7 @@ This is the central operating manual and single source of truth for agents. Read
 
 ## 1. Project Overview & Core Philosophy
 
-Outlaw Forge is a web-based 3D-print preparation workbench for inspecting, repairing, transforming, and arranging mesh models before they reach a slicer. It unifies a **FastAPI geometry engine** with a **Next.js/Three.js CAD-style workbench**.
+Outlaw Forge is a local-first 3D-print preparation workbench for inspecting, repairing, transforming, and arranging mesh models before an external slicer. The main Tauri desktop application hosts a **Next.js/Three.js workbench** backed by a **FastAPI geometry service**. A separate, experimental **Qt Quick 3D viewport** is under development; it is not part of the Tauri package.
 
 ### Core Tenets (Non-Negotiable)
 1. **Millimetre-Standard**: All dimensional data, bounding boxes, printer volumes, and mesh coordinates are in millimetres (`mm`).
@@ -27,13 +27,14 @@ d:\Outlaw-Forge\
 │   ├── api/                 FastAPI service, SQLite persistence, and mesh operations (PyMeshLab, Trimesh, NumPy)
 │   │   ├── app/             Core application code (api routes, core routers, models, schemas, services)
 │   │   └── tests/           Pytest test suite (unit, integration, geometry checks)
-│   └── web/                 Next.js 14+ / React 18 workbench and Three.js 3D viewport
+│   ├── web/                 Next.js 16 / React 19 workbench and Three.js 3D viewport
+│   └── native/              Separate experimental Qt Quick 3D viewport foundation
 │       ├── app/             App router pages and API route proxies
 │       ├── components/      Workbench UI components, studio tools, toolbars, sidebars
 │       └── hooks/           React hooks for project state, mesh manipulation, and viewport interaction
 ├── packages/
 │   ├── shared/              Shared TypeScript API, schema, and viewport contracts (mirrors FastAPI Pydantic models)
-│   ├── three-tools/         Three.js geometry loaders (STL/OBJ/3MF), transforms, materials, raycasting, camera rigs
+│   ├── three-tools/         Three.js geometry loaders (STL/OBJ/GLTF/GLB/3MF), transforms, materials, raycasting, camera rigs
 │   └── ui/                  Shared design system primitives and Workbench UI components
 ├── data/                    Runtime database and asset storage (GITIGNORED - do not commit)
 │   ├── uploads/             Original uploaded source meshes (immutable)

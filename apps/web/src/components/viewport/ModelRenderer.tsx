@@ -95,6 +95,9 @@ export interface ModelRendererProps {
    */
   isSelected?: boolean;
 
+  /** Hide this node from rendering and pointer selection without unloading geometry. */
+  visible?: boolean;
+
   /**
    * Callback fired when geometry is parsed, centered, and analyzed
    */
@@ -106,7 +109,7 @@ export interface ModelRendererProps {
   onTransformChange?: (transform: ModelTransformEvent) => void;
 
   /** Fired when the mesh is clicked in select mode. */
-  onSelect?: () => void;
+  onSelect?: (modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => void;
 
   /** Fired when the user opens the model context menu. */
   onContextMenu?: (clientX: number, clientY: number) => void;
@@ -189,6 +192,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
   showWireframe = false,
   color = '#38bdf8',
   isSelected = true,
+  visible = true,
   onModelLoaded,
   onTransformChange,
   onSelect,
@@ -206,7 +210,14 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
   const meshRef = useRef<THREE.Mesh>(null);
   const transformControlsRef = useRef<any>(null);
   const directDragRef = useRef<{ pointerId: number; offset: THREE.Vector3 } | null>(null);
+  const rightClickStartRef = useRef<{ x: number; y: number } | null>(null);
+  const rightClickDraggedRef = useRef(false);
   const isTransformDraggingRef = useRef(false);
+  const onModelLoadedRef = useRef(onModelLoaded);
+
+  useEffect(() => {
+    onModelLoadedRef.current = onModelLoaded;
+  }, [onModelLoaded]);
 
   const bedWidth = printer.build_width_mm || 220;
   const bedDepth = printer.build_depth_mm || 220;
@@ -270,9 +281,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
         setComputedBounds(bounds);
         setLoading(false);
 
-        if (onModelLoaded) {
-          onModelLoaded(centeredGeom, metrics);
-        }
+        onModelLoadedRef.current?.(centeredGeom, metrics);
       } catch (err: unknown) {
         if (isCancelled) return;
         const msg = err instanceof Error ? err.message : 'Failed to parse 3D mesh';
@@ -284,7 +293,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
         setGeometry(sampleGeom);
         setComputedBounds(bounds);
         setLoading(false);
-        if (onModelLoaded) onModelLoaded(sampleGeom, metrics);
+        onModelLoadedRef.current?.(sampleGeom, metrics);
       }
     }
 
@@ -294,7 +303,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
       isCancelled = true;
       abortControllerRef.current?.abort();
     };
-  }, [model?.id, model?.updated_at, model?.filename, model?.transform?.uniform_scale_percent, modelBuffer, modelUrl, bedWidth, bedDepth, onModelLoaded, onError]);
+  }, [model?.id, model?.updated_at, model?.filename, model?.transform?.uniform_scale_percent, modelBuffer, modelUrl, bedWidth, bedDepth, onError]);
 
   // OrcaSlicer Shaders
   const overhangMaterial = useMemo(() => {
@@ -417,8 +426,6 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
   const handleDirectPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     if (!isSelected || activeTool !== 'select' || event.button !== 0 || !modelGroupRef.current) return;
     event.stopPropagation();
-    onSelect?.();
-
     const parent = modelGroupRef.current.parent;
     if (!parent) return;
     const hit = new THREE.Vector3();
@@ -438,7 +445,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
     isTransformDraggingRef.current = true;
     (event.target as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture?.(event.pointerId);
     onGizmoDragging?.(true);
-  }, [activeTool, isSelected, onGizmoDragging, onSelect]);
+  }, [activeTool, isSelected, onGizmoDragging]);
 
   const handleDirectPointerMove = useCallback((event: ThreeEvent<PointerEvent>) => {
     const drag = directDragRef.current;
@@ -474,15 +481,38 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
   }, [onGizmoDragging]);
 
   const meshInteractionHandlers = {
-    onClick: (event: ThreeEvent<MouseEvent>) => { event.stopPropagation(); onSelect?.(); },
-    onPointerDown: handleDirectPointerDown,
-    onPointerMove: handleDirectPointerMove,
+    onClick: (event: ThreeEvent<MouseEvent>) => {
+      event.stopPropagation();
+      onSelect?.({ shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey });
+    },
+    onPointerDown: (event: ThreeEvent<PointerEvent>) => {
+      if (event.button === 2) {
+        rightClickStartRef.current = { x: event.nativeEvent.clientX, y: event.nativeEvent.clientY };
+        rightClickDraggedRef.current = false;
+      }
+      handleDirectPointerDown(event);
+    },
+    onPointerMove: (event: ThreeEvent<PointerEvent>) => {
+      const start = rightClickStartRef.current;
+      if (start && (event.nativeEvent.buttons & 2) !== 0) {
+        const dx = event.nativeEvent.clientX - start.x;
+        const dy = event.nativeEvent.clientY - start.y;
+        if (dx * dx + dy * dy > 16) rightClickDraggedRef.current = true;
+      }
+      handleDirectPointerMove(event);
+    },
     onPointerUp: handleDirectPointerUp,
     onPointerCancel: handleDirectPointerCancel,
     onContextMenu: (event: ThreeEvent<MouseEvent>) => {
       event.stopPropagation();
       event.nativeEvent.preventDefault();
-      onSelect?.();
+      if (rightClickDraggedRef.current) {
+        rightClickStartRef.current = null;
+        rightClickDraggedRef.current = false;
+        return;
+      }
+      rightClickStartRef.current = null;
+      onSelect?.({ shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey });
       onContextMenu?.(event.nativeEvent.clientX, event.nativeEvent.clientY);
     },
   };
@@ -591,6 +621,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
         rotation={modelTransform.rotation}
         scale={modelTransform.scale}
         name="ActiveModelNode"
+        visible={visible}
       >
         {/* 1. Model Mesh with Selected Shader */}
         {effectiveRenderMode === 'overhangs' ? (
@@ -678,7 +709,7 @@ export const ModelRenderer: React.FC<ModelRendererProps> = ({
       </group>
 
       {/* 5. Drei TransformControls Manipulator */}
-      {transformMode && modelGroupRef.current && (
+      {visible && isSelected && transformMode && modelGroupRef.current && (
         <TransformControls
           ref={transformControlsRef}
           object={modelGroupRef.current}

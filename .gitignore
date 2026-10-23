@@ -22,6 +22,8 @@ __pycache__/
 build/
 *.egg-info/
 apps/web/tsconfig.tsbuildinfo
+/apps/native/build-*/
+/.agents/
 
 # Build outputs
 build/

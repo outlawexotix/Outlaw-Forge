@@ -1,0 +1,2388 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import QtQuick3D
+import QtQuick.Dialogs
+import OutlawForge.NativeTypes 1.0
+
+ApplicationWindow {
+    id: window
+    width: 1440
+    height: 900
+    minimumWidth: 1100
+    minimumHeight: 720
+    visible: true
+    title: "Outlaw Forge - Native Viewport"
+    color: "#0e1112"
+    property bool modelSelected: false
+    property bool modelVisible: true
+    property vector3d modelOffset: Qt.vector3d(0, 0, 0)
+    property vector3d modelRotation: Qt.vector3d(0, 0, 0)
+    property vector3d modelScale: Qt.vector3d(1, 1, 1)
+    property int selectedInstanceIndex: -1
+    property var derivedGeometries: ({})
+    property int nextGeometryId: 1
+    property int nextSceneInstanceId: 1
+    property string pendingImportUrl: ""
+    property string pendingSliceRequestId: ""
+    property var pendingSliceOptions: ({})
+    property bool restoringInstanceState: false
+    property bool wireframeMode: false
+    property bool boundsVisible: false
+    property bool normalsVisible: false
+    property bool measurementMode: false
+    property var measurementStart: null
+    property var measurementEnd: null
+    property int viewportTransformMode: 0 // 0 move, 1 rotate, 2 scale
+    property string viewportTransformAxis: "All"
+    property bool uniformScaleEnabled: true
+    property var meshAnalysis: ({})
+    property bool slicePlaneActive: false
+    property bool slicePlaneDragging: false
+    property bool slicePlaneRotateMode: false
+    property vector3d sliceDragOrigin: Qt.vector3d(0, 0, 0)
+    property vector3d sliceDragNormal: Qt.vector3d(0, 0, 1)
+    property vector3d sliceDragWorldAnchor: Qt.vector3d(0, 0, 0)
+    property vector3d sliceDragWorldPerMm: Qt.vector3d(0, 0, 0)
+
+    function refreshMeshAnalysis() {
+        meshAnalysis = selectedGeometry().analyzeMesh()
+    }
+
+    function recordMeasurementPoint(point) {
+        if (measurementStart === null || measurementEnd !== null) {
+            measurementStart = point
+            measurementEnd = null
+            statusLabel.text = "Measure: first point set. Select a second point on the model."
+            return
+        }
+        measurementEnd = point
+        const dx = point.x - measurementStart.x
+        const dy = point.y - measurementStart.y
+        const dz = point.z - measurementStart.z
+        statusLabel.text = `Distance: ${Math.sqrt(dx * dx + dy * dy + dz * dz).toFixed(3)} mm`
+    }
+
+    function clearMeasurement() {
+        measurementStart = null
+        measurementEnd = null
+        statusLabel.text = measurementMode ? "Measure: select a first point on the model." : "Measurement cleared"
+    }
+
+    function selectedGeometry() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return importedGeometry
+        return geometryForKey(sceneInstances.get(selectedInstanceIndex).geometryKey)
+    }
+
+    function geometryForKey(key) {
+        return key === "source" ? importedGeometry : derivedGeometries[key]
+    }
+
+    function createDerivedGeometry() {
+        const geometry = Qt.createQmlObject("import OutlawForge.NativeTypes 1.0\nMeshGeometry {}", view3d,
+                                             `derivedGeometry${nextGeometryId}`)
+        const key = `derived-${nextGeometryId++}`
+        const updated = Object.assign({}, derivedGeometries)
+        updated[key] = geometry
+        derivedGeometries = updated
+        return { key: key, geometry: geometry }
+    }
+
+    function destroyDerivedGeometry(key) {
+        const geometry = derivedGeometries[key]
+        if (!geometry)
+            return
+        const updated = Object.assign({}, derivedGeometries)
+        delete updated[key]
+        derivedGeometries = updated
+        geometry.destroy()
+    }
+
+    function newSceneInstanceId() {
+        return `native-instance-${nextSceneInstanceId++}`
+    }
+
+    function loadSliceGeometry(geometry, url) {
+        const lowerPath = url.toString().toLowerCase()
+        if (lowerPath.endsWith(".obj"))
+            return geometry.loadObj(url)
+        if (lowerPath.endsWith(".stl"))
+            return geometry.loadStl(url)
+        return false
+    }
+
+    function clearPendingSlice(requestId) {
+        const updated = Object.assign({}, pendingSliceOptions)
+        delete updated[requestId]
+        pendingSliceOptions = updated
+        if (pendingSliceRequestId === requestId)
+            pendingSliceRequestId = ""
+    }
+
+    function failServiceSlice(requestId, message, topModelId, bottomModelId) {
+        const recoveryIds = topModelId || bottomModelId
+            ? ` Persisted model IDs: ${topModelId || "unknown"}, ${bottomModelId || "unknown"}.`
+            : ""
+        const text = `${message}${recoveryIds}`
+        clearPendingSlice(requestId)
+        sliceStatus.text = text
+        statusLabel.text = text
+    }
+
+    function completeServiceSlice(requestId, topModelId, topName, topUrl, topWatertight,
+                                   bottomModelId, bottomName, bottomUrl, bottomWatertight,
+                                   cutAreaCm2, message) {
+        const options = pendingSliceOptions[requestId]
+        clearPendingSlice(requestId)
+        let sourceIndex = -1
+        for (let i = 0; i < sceneInstances.count; ++i) {
+            if (sceneInstances.get(i).instanceId === requestId) {
+                sourceIndex = i
+                break
+            }
+        }
+        if (!options || sourceIndex < 0) {
+            failServiceSlice(requestId, `Slice was saved by the service but its scene instance is no longer available. ${message}`,
+                             topModelId, bottomModelId)
+            return
+        }
+
+        const sourceRow = sceneInstances.get(sourceIndex)
+        const sourceGeometry = geometryForKey(sourceRow.geometryKey)
+        const top = createDerivedGeometry()
+        const bottom = createDerivedGeometry()
+        const topLoaded = loadSliceGeometry(top.geometry, topUrl)
+        const bottomLoaded = loadSliceGeometry(bottom.geometry, bottomUrl)
+        if (!topLoaded || !bottomLoaded) {
+            destroyDerivedGeometry(top.key)
+            destroyDerivedGeometry(bottom.key)
+            failServiceSlice(requestId, "The service saved the cut, but a returned mesh could not be loaded locally.",
+                             topModelId, bottomModelId)
+            return
+        }
+
+        sceneInstances.setProperty(sourceIndex, "geometryKey", top.key)
+        sceneInstances.setProperty(sourceIndex, "backendModelId", topModelId)
+        sceneInstances.setProperty(sourceIndex, "sourceUrl", "")
+        sceneInstances.setProperty(sourceIndex, "name", topName)
+        sceneInstances.setProperty(sourceIndex, "piece", "derived")
+        if (options.keepBoth) {
+            sceneInstances.append({
+                instanceId: newSceneInstanceId(), name: bottomName, piece: "derived", geometryKey: bottom.key,
+                backendModelId: bottomModelId, sourceUrl: "",
+                offsetX: sourceRow.offsetX + sourceGeometry.dimensions.x + 6,
+                offsetY: sourceRow.offsetY, offsetZ: sourceRow.offsetZ,
+                rotationX: sourceRow.rotationX, rotationY: sourceRow.rotationY, rotationZ: sourceRow.rotationZ,
+                scaleX: sourceRow.scaleX, scaleY: sourceRow.scaleY, scaleZ: sourceRow.scaleZ,
+                instanceVisible: sourceRow.instanceVisible
+            })
+        }
+        const topStatus = topWatertight ? "watertight" : "NOT watertight"
+        const bottomStatus = bottomWatertight ? "watertight" : "NOT watertight"
+        const closureStatus = options.keepBoth
+            ? `Positive side: ${topStatus}. Negative side: ${bottomStatus}.`
+            : `Kept section: ${topStatus}.`
+        const cutSummary = `Service slice saved. Cut area ${Number(cutAreaCm2).toFixed(3)} cm2. ${closureStatus} ${message}`
+        sliceStatus.text = cutSummary
+        statusLabel.text = cutSummary
+        if (options.keepBoth && selectedInstanceIndex === sourceIndex)
+            setInstanceSelected(sceneInstances.count - 1)
+        else if (selectedInstanceIndex === sourceIndex)
+            setInstanceSelected(sourceIndex)
+        if (selectedInstanceIndex === sourceIndex || (options.keepBoth && selectedInstanceIndex === sceneInstances.count - 1))
+            refreshMeshAnalysis()
+        slicePlaneActive = false
+        sliceDialog.close()
+    }
+
+    Connections {
+        target: sliceCommandClient
+
+        function onSourceRegistered(sourceUrl, projectId, modelId) {
+            const sourceKey = sourceUrl.toString()
+            let associated = false
+            for (let i = 0; i < sceneInstances.count; ++i) {
+                if (sceneInstances.get(i).sourceUrl === sourceKey) {
+                    sceneInstances.setProperty(i, "backendModelId", modelId)
+                    associated = true
+                }
+            }
+            if (associated)
+                statusLabel.text = `Source registered with geometry service (${projectId}).`
+        }
+
+        function onSourceRegistrationFailed(sourceUrl, message) {
+            const sourceKey = sourceUrl.toString()
+            for (let i = 0; i < sceneInstances.count; ++i) {
+                if (sceneInstances.get(i).sourceUrl === sourceKey) {
+                    const text = `Service registration failed: ${message}`
+                    statusLabel.text = text
+                    sliceStatus.text = text
+                    return
+                }
+            }
+        }
+
+        function onSliceCompleted(requestId, topModelId, topName, topUrl, topWatertight,
+                                  bottomModelId, bottomName, bottomUrl, bottomWatertight,
+                                  cutAreaCm2, message) {
+            completeServiceSlice(requestId, topModelId, topName, topUrl, topWatertight,
+                                 bottomModelId, bottomName, bottomUrl, bottomWatertight,
+                                 cutAreaCm2, message)
+        }
+
+        function onSliceFailed(requestId, message, topModelId, bottomModelId) {
+            failServiceSlice(requestId, message, topModelId, bottomModelId)
+        }
+    }
+
+    function repairSelectedMesh() {
+        const result = selectedGeometry().repairMesh(repairTolerance.value / 100.0)
+        if (result.error) {
+            statusLabel.text = result.error
+            return
+        }
+        refreshMeshAnalysis()
+        statusLabel.text = `Repair complete: welded ${result.weldedVertices} vertices, removed ${result.removedTriangles} triangles`
+    }
+
+    function applyPlaneSlice() {
+        const point = Qt.vector3d(slicePointX.value / 100.0, slicePointY.value / 100.0, slicePointZ.value / 100.0)
+        const normal = Qt.vector3d(sliceNormalX.value / 10000.0, sliceNormalY.value / 10000.0, sliceNormalZ.value / 10000.0)
+        const keepBoth = sliceKeepSide.currentIndex === 2
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count) {
+            sliceStatus.text = "Select a mesh instance before cutting."
+            return
+        }
+        const sourceRow = sceneInstances.get(selectedInstanceIndex)
+        const sourceGeometry = geometryForKey(sourceRow.geometryKey)
+        if (!sourceGeometry || !sourceGeometry.loaded) {
+            sliceStatus.text = "The selected mesh geometry is unavailable."
+            return
+        }
+        if (!sourceRow.backendModelId) {
+            sliceStatus.text = "This model is not registered for service-backed slicing. Import an STL or OBJ while the geometry service is available."
+            return
+        }
+        if (pendingSliceRequestId) {
+            sliceStatus.text = "A service slice is already in progress."
+            return
+        }
+        const activeModel = instanceRepeater.objectAt(selectedInstanceIndex)
+        if (!activeModel || !activeModel.sceneTransform) {
+            sliceStatus.text = "The selected model transform is not ready."
+            return
+        }
+        const requestId = sourceRow.instanceId
+        const updatedOptions = Object.assign({}, pendingSliceOptions)
+        updatedOptions[requestId] = { keepBoth: keepBoth }
+        pendingSliceOptions = updatedOptions
+        pendingSliceRequestId = requestId
+        sliceStatus.text = "Sending slice to geometry service..."
+        sliceCommandClient.sliceModel(requestId, sourceRow.backendModelId, point, normal,
+                                      sliceKeepSide.currentIndex !== 0, activeModel.sceneTransform)
+    }
+
+    function applyNumericScale(axis, targetValue) {
+        const currentValue = axis === "X" ? modelScale.x : axis === "Y" ? modelScale.y : modelScale.z
+        if (uniformScaleEnabled && Math.abs(currentValue) > 0.000001) {
+            const ratio = targetValue / currentValue
+            modelScale = Qt.vector3d(modelScale.x * ratio, modelScale.y * ratio, modelScale.z * ratio)
+        } else if (axis === "X") modelScale = Qt.vector3d(targetValue, modelScale.y, modelScale.z)
+        else if (axis === "Y") modelScale = Qt.vector3d(modelScale.x, targetValue, modelScale.z)
+        else modelScale = Qt.vector3d(modelScale.x, modelScale.y, targetValue)
+    }
+
+    function setTransformMode(mode) {
+        viewportTransformMode = mode
+        const names = ["Move", "Rotate", "Scale"]
+        statusLabel.text = `${names[mode]} ${viewportTransformAxis === "All" ? "on all axes" : `on ${viewportTransformAxis}`}`
+    }
+
+    function setTransformAxis(axis) {
+        viewportTransformAxis = axis
+        const names = ["Move", "Rotate", "Scale"]
+        statusLabel.text = `${names[viewportTransformMode]} ${axis === "All" ? "on all axes" : `on ${axis}`}`
+    }
+
+    ListModel { id: sceneInstances }
+
+    onModelOffsetChanged: syncActiveInstance()
+    onModelRotationChanged: syncActiveInstance()
+    onModelScaleChanged: syncActiveInstance()
+    onModelVisibleChanged: syncActiveInstance()
+
+    header: ToolBar {
+        height: 48
+        background: Rectangle { color: "#191714"; border.color: "#49301f"; border.width: 1 }
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 16
+            anchors.rightMargin: 16
+            Rectangle {
+                Layout.preferredWidth: 27
+                Layout.preferredHeight: 27
+                radius: 6
+                color: "#f28c45"
+                Text { anchors.centerIn: parent; text: "OF"; color: "#17120e"; font.pixelSize: 10; font.weight: Font.Black; font.letterSpacing: -0.5 }
+            }
+            Label {
+                text: "OUTLAW FORGE"
+                color: "#f2e9dd"
+                font.pixelSize: 13
+                font.weight: Font.Bold
+                font.letterSpacing: 1.35
+            }
+            Label {
+                text: "NATIVE VIEWPORT FOUNDATION"
+                color: "#92877c"
+                font.pixelSize: 10
+                Layout.leftMargin: 12
+            }
+            Item { Layout.fillWidth: true }
+            Label {
+                text: "Z-UP  /  MILLIMETRES"
+                color: "#79dec2"
+                font.pixelSize: 10
+                font.family: "monospace"
+            }
+            Button {
+                text: "Import Model"
+                onClicked: meshDialog.open()
+                background: Rectangle { color: parent.down ? "#d76c32" : "#f28c45"; border.color: "#ffbd79"; radius: 4 }
+                contentItem: Text { text: parent.text; color: "#1c130d"; font.pixelSize: 11; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+            }
+        }
+    }
+
+    RowLayout {
+        anchors.fill: parent
+        spacing: 0
+
+        Rectangle {
+            Layout.preferredWidth: 230
+            Layout.fillHeight: true
+            color: "#141817"
+            border.color: "#343a35"
+            border.width: 1
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 16
+                spacing: 12
+                Label { text: "01   /   SCENE"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0 }
+                Repeater {
+                    model: sceneInstances
+                    delegate: Rectangle {
+                        required property int index
+                        required property string name
+                        Layout.fillWidth: true
+                        height: 36
+                        radius: 3
+                        color: index === window.selectedInstanceIndex ? "#332219" : "#1d2421"
+                        border.color: index === window.selectedInstanceIndex ? "#e57b3e" : "#39433c"
+                        MouseArea { anchors.fill: parent; onClicked: window.setInstanceSelected(index) }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            Label { text: "▰"; color: "#f28c45"; font.pixelSize: 13 }
+                            Label { text: name; color: "#e5e2da"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                        }
+                    }
+                }
+                Label { visible: sceneInstances.count === 0; text: "No model loaded"; color: "#a8947f"; font.pixelSize: 11 }
+                Label {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    text: importedGeometry.loaded
+                        ? `Bounds: ${window.selectedWorldDimensions().x.toFixed(2)} x ${window.selectedWorldDimensions().y.toFixed(2)} x ${window.selectedWorldDimensions().z.toFixed(2)} mm (world aligned)`
+                        : "Import an STL or OBJ to inspect a model in the native viewport. Source files are opened read-only."
+                    color: "#a8947f"
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
+                }
+                Button {
+                    text: "Duplicate instance"
+                    enabled: importedGeometry.loaded && selectedInstanceIndex >= 0
+                    onClicked: window.duplicateSelectedInstance()
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Duplicate selected mesh (Ctrl+D)"
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                }
+                RowLayout {
+                    visible: importedGeometry.loaded && selectedInstanceIndex >= 0
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Button {
+                        text: "Place on bed"
+                        Layout.fillWidth: true
+                        onClicked: window.placeSelectedOnBed()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Move the lowest point of this model to Z=0 mm"
+                        contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                    }
+                    Button {
+                        text: "Center XY"
+                        Layout.fillWidth: true
+                        onClicked: window.centerSelectedOnPlate()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Center this model over the build plate origin"
+                        contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                    }
+                }
+                Button {
+                    text: importedGeometry.loaded ? "Remove instance" : "Choose model"
+                    onClicked: importedGeometry.loaded ? window.removeSelectedInstance() : meshDialog.open()
+                    ToolTip.visible: hovered && importedGeometry.loaded
+                    ToolTip.text: "Remove selected scene instance (Delete)"
+                    contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                }
+                Button {
+                    text: modelVisible ? "Hide instance" : "Show instance"
+                    enabled: importedGeometry.loaded && selectedInstanceIndex >= 0
+                    onClicked: window.modelVisible = !window.modelVisible
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Toggle selected instance visibility (Ctrl+H)"
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                }
+                Button {
+                    text: "Reset transforms"
+                    enabled: importedGeometry.loaded
+                    onClicked: {
+                        window.modelOffset = Qt.vector3d(0, 0, 0)
+                        window.modelRotation = Qt.vector3d(0, 0, 0)
+                        window.modelScale = Qt.vector3d(1, 1, 1)
+                        window.modelVisible = true
+                        frameImportedModel()
+                    }
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                }
+                Label { text: "02   /   MIRROR AXIS"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0; visible: importedGeometry.loaded && modelSelected; Layout.topMargin: 8 }
+                RowLayout {
+                    visible: importedGeometry.loaded && modelSelected
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Repeater {
+                        model: ["X", "Y", "Z"]
+                        delegate: Button {
+                            required property string modelData
+                            Layout.fillWidth: true
+                            text: modelData
+                            ToolTip.visible: hovered
+                            ToolTip.text: `Mirror across ${modelData} axis by flipping its signed scale`
+                            onClicked: window.mirrorModel(modelData)
+                            contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            background: Rectangle { color: parent.down ? "#386c5d" : "#202723"; border.color: "#424b43"; radius: 3 }
+                        }
+                    }
+                }
+                Label { text: "03   /   MOVE (MM)"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0; visible: importedGeometry.loaded && modelSelected; Layout.topMargin: 8 }
+                Repeater {
+                    model: ["X", "Y", "Z"]
+                    delegate: RowLayout {
+                        required property string modelData
+                        visible: importedGeometry.loaded && modelSelected
+                        Layout.fillWidth: true
+                        Label { text: modelData; color: "#aa9c89"; font.pixelSize: 10; Layout.preferredWidth: 14 }
+                        SpinBox {
+                            id: scaleControl
+                            Layout.fillWidth: true
+                            from: -1000000
+                            to: 1000000
+                            stepSize: 100
+                            editable: true
+                            value: Math.round((modelData === "X" ? window.modelOffset.x : modelData === "Y" ? window.modelOffset.y : window.modelOffset.z) * 100)
+                            textFromValue: function(value) { return (value / 100).toFixed(2) }
+                            valueFromText: function(text) { return Math.round(Number.fromLocaleString(Qt.locale(), text) * 100) }
+                            onValueModified: {
+                                if (modelData === "X") window.modelOffset = Qt.vector3d(value / 100, window.modelOffset.y, window.modelOffset.z)
+                                else if (modelData === "Y") window.modelOffset = Qt.vector3d(window.modelOffset.x, value / 100, window.modelOffset.z)
+                                else window.modelOffset = Qt.vector3d(window.modelOffset.x, window.modelOffset.y, value / 100)
+                            }
+                        }
+                    }
+                }
+                Label { text: "04   /   ROTATE (DEG)"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0; visible: importedGeometry.loaded && modelSelected; Layout.topMargin: 6 }
+                Repeater {
+                    model: ["X", "Y", "Z"]
+                    delegate: RowLayout {
+                        required property string modelData
+                        visible: importedGeometry.loaded && modelSelected
+                        Layout.fillWidth: true
+                        Label { text: modelData; color: "#aa9c89"; font.pixelSize: 10; Layout.preferredWidth: 14 }
+                        SpinBox {
+                            Layout.fillWidth: true
+                            from: -36000
+                            to: 36000
+                            stepSize: 100
+                            editable: true
+                            value: Math.round((modelData === "X" ? window.modelRotation.x : modelData === "Y" ? window.modelRotation.y : window.modelRotation.z) * 100)
+                            textFromValue: function(value) { return (value / 100).toFixed(2) }
+                            valueFromText: function(text) { return Math.round(Number.fromLocaleString(Qt.locale(), text) * 100) }
+                            onValueModified: {
+                                if (modelData === "X") window.modelRotation = Qt.vector3d(value / 100, window.modelRotation.y, window.modelRotation.z)
+                                else if (modelData === "Y") window.modelRotation = Qt.vector3d(window.modelRotation.x, value / 100, window.modelRotation.z)
+                                else window.modelRotation = Qt.vector3d(window.modelRotation.x, window.modelRotation.y, value / 100)
+                            }
+                        }
+                    }
+                }
+                RowLayout {
+                    visible: importedGeometry.loaded && modelSelected
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    Label { text: "05   /   SCALE (%)"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0 }
+                    Item { Layout.fillWidth: true }
+                    CheckBox {
+                        text: "Uniform"
+                        checked: window.uniformScaleEnabled
+                        onToggled: window.uniformScaleEnabled = checked
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Preserve axis proportions when changing a numeric scale value"
+                        contentItem: Text { text: parent.text; color: "#d5d0c7"; font.pixelSize: 10; leftPadding: 3; verticalAlignment: Text.AlignVCenter }
+                        indicator: Rectangle {
+                            implicitWidth: 14
+                            implicitHeight: 14
+                            x: 0
+                            y: parent.height / 2 - height / 2
+                            radius: 2
+                            color: parent.checked ? "#257b63" : "#191f1c"
+                            border.color: parent.checked ? "#79dec2" : "#596357"
+                            Text { anchors.centerIn: parent; text: "✓"; color: "white"; font.pixelSize: 10; visible: parent.parent.checked }
+                        }
+                    }
+                }
+                Repeater {
+                    model: ["X", "Y", "Z"]
+                    delegate: RowLayout {
+                        required property string modelData
+                        visible: importedGeometry.loaded && modelSelected
+                        Layout.fillWidth: true
+                        Label { text: modelData; color: "#aa9c89"; font.pixelSize: 10; Layout.preferredWidth: 14 }
+                        SpinBox {
+                            Layout.fillWidth: true
+                            from: -100000000
+                            to: 100000000
+                            stepSize: 100
+                            editable: true
+                            value: Math.round((modelData === "X" ? window.modelScale.x : modelData === "Y" ? window.modelScale.y : window.modelScale.z) * 10000)
+                            textFromValue: function(value) { return (value / 100).toFixed(2) + "%" }
+                            valueFromText: function(text) {
+                                const parsed = Math.round(Number(text.replace("%", "")) * 100)
+                                const nonzero = Math.abs(parsed) < 100 ? (parsed < 0 ? -100 : 100) : parsed
+                                return Math.max(-100000000, Math.min(100000000, nonzero))
+                            }
+                            onValueModified: {
+                                if (value === 0) {
+                                    const current = modelData === "X" ? window.modelScale.x : modelData === "Y" ? window.modelScale.y : window.modelScale.z
+                                    scaleControl.value = current < 0 ? -100 : 100
+                                    return
+                                }
+                                const signedValue = value / 10000
+                                window.applyNumericScale(modelData, signedValue)
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    visible: importedGeometry.loaded
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    implicitHeight: meshRepairColumn.implicitHeight + 16
+                    color: "#191f1c"
+                    border.color: "#3a4a40"
+                    radius: 4
+                    ColumnLayout {
+                        id: meshRepairColumn
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 8
+                        spacing: 5
+                        Label { text: "06   /   MESH HEALTH"; color: "#79dec2"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0 }
+                        Label {
+                            Layout.fillWidth: true
+                            text: meshAnalysis.triangles === undefined
+                                ? `${importedGeometry.triangleCount} triangles - analyze for edge counts`
+                                : `${meshAnalysis.triangles} tris  /  ${meshAnalysis.degenerateTriangles} degenerate\n${meshAnalysis.boundaryEdges} boundary edges  /  ${meshAnalysis.nonManifoldEdges} non-manifold`
+                            color: "#c8c3b8"
+                            font.pixelSize: 9
+                            wrapMode: Text.WordWrap
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Button {
+                                text: "Analyze"
+                                Layout.fillWidth: true
+                                onClicked: refreshMeshAnalysis()
+                                contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                            }
+                            Button {
+                                text: "Repair"
+                                Layout.fillWidth: true
+                                onClicked: repairSelectedMesh()
+                                contentItem: Text { text: parent.text; color: "#161c18"; font.pixelSize: 10; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                background: Rectangle { color: "#79dec2"; border.color: "#a2f0d9"; radius: 3 }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label { text: "Weld tol (mm)"; color: "#aa9c89"; font.pixelSize: 9 }
+                            Item { Layout.fillWidth: true }
+                            SpinBox {
+                                id: repairTolerance
+                                from: 1
+                                to: 1000
+                                value: 1
+                                editable: true
+                                textFromValue: function(value) { return (value / 100.0).toFixed(2) }
+                                valueFromText: function(text) { return Math.max(1, Math.min(1000, Math.round(Number(text) * 100))) }
+                            }
+                        }
+                    }
+                }
+                Item { Layout.fillHeight: true }
+                Label { text: "RENDER CORE"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0 }
+                Label { text: "Qt Quick 3D / C++"; color: "#e5e2da"; font.pixelSize: 11 }
+                Label { text: "Rendering Hardware Interface"; color: "#92877c"; font.pixelSize: 10; wrapMode: Text.WordWrap }
+            }
+        }
+
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
+            View3D {
+                id: view3d
+                anchors.fill: parent
+                camera: camera
+                environment: SceneEnvironment {
+                    clearColor: "#151a18"
+                    backgroundMode: SceneEnvironment.Color
+                    antialiasingMode: SceneEnvironment.MSAA
+                    antialiasingQuality: SceneEnvironment.High
+                    debugSettings: DebugSettings {
+                        wireframeEnabled: window.wireframeMode
+                    }
+                }
+
+                Node {
+                    id: slicerSpace
+
+                    Node {
+                        id: cameraRig
+                        // Default isometric angle looks toward the common Z-up
+                        // CAD front (-Y) side of the build plate.
+                        eulerRotation: Qt.vector3d(48, 0, 0)
+                        position: Qt.vector3d(0, 0, 0)
+
+                        PerspectiveCamera {
+                            id: camera
+                            position: Qt.vector3d(0, 0, 520)
+                            clipNear: 0.1
+                            clipFar: 100000
+                            fieldOfView: 42
+                        }
+                    }
+
+                    DirectionalLight {
+                        eulerRotation: Qt.vector3d(-35, -25, -25)
+                        brightness: 1.3
+                    }
+                    DirectionalLight {
+                        eulerRotation: Qt.vector3d(35, 145, 0)
+                        brightness: 0.45
+                    }
+
+                    // Canonical project space stays right-handed and Z-up.
+                    // Build plate dimensions and model transforms are in mm.
+                    Model {
+                        source: "#Cube"
+                        position: Qt.vector3d(0, 0, -0.6)
+                        scale: Qt.vector3d(2.2, 2.2, 0.012)
+                        materials: PrincipledMaterial {
+                            baseColor: "#242d28"
+                            roughness: 0.88
+                            metalness: 0.08
+                        }
+                    }
+
+                    Repeater3D {
+                        model: 23
+                        delegate: Model {
+                            required property int index
+                            source: "#Cube"
+                            position: Qt.vector3d((index - 11) * 10, 0, 0.05)
+                            scale: Qt.vector3d(0.003, 2.2, 0.001)
+                            materials: PrincipledMaterial { baseColor: "#49544a"; roughness: 1.0 }
+                        }
+                    }
+                    Repeater3D {
+                        model: 23
+                        delegate: Model {
+                            required property int index
+                            source: "#Cube"
+                            position: Qt.vector3d(0, (index - 11) * 10, 0.05)
+                            scale: Qt.vector3d(2.2, 0.003, 0.001)
+                            materials: PrincipledMaterial { baseColor: "#49544a"; roughness: 1.0 }
+                        }
+                    }
+
+                    Repeater3D {
+                        id: instanceRepeater
+                        model: sceneInstances
+                        delegate: Model {
+                            required property int index
+                            required property real offsetX
+                            required property real offsetY
+                            required property real offsetZ
+                            required property real rotationX
+                            required property real rotationY
+                            required property real rotationZ
+                            required property real scaleX
+                            required property real scaleY
+                            required property real scaleZ
+                            required property bool instanceVisible
+                            required property string piece
+                            required property string geometryKey
+                            property int instanceIndex: index
+                            property var meshGeometry: window.geometryForKey(geometryKey)
+                            geometry: meshGeometry
+                            position: Qt.vector3d(meshGeometry.center.x + offsetX,
+                                                  meshGeometry.center.y + offsetY,
+                                                  meshGeometry.center.z - meshGeometry.dimensions.z * 0.5 + offsetZ)
+                            eulerRotation: Qt.vector3d(rotationX, rotationY, rotationZ)
+                            scale: Qt.vector3d(scaleX, scaleY, scaleZ)
+                            visible: meshGeometry.loaded && instanceVisible
+                            pickable: true
+                            materials: PrincipledMaterial {
+                            baseColor: index === window.selectedInstanceIndex ? "#f1a35d" : "#bd7840"
+                                roughness: 0.42
+                                metalness: 0.22
+                                cullMode: Material.NoCulling
+                            }
+
+                            Node {
+                                position: Qt.vector3d(0, 0, meshGeometry.dimensions.z * 0.5)
+                                scale: Qt.vector3d(meshGeometry.dimensions.x * 0.0102,
+                                                   meshGeometry.dimensions.y * 0.0102,
+                                                   meshGeometry.dimensions.z * 0.0102)
+                                visible: window.boundsVisible && index === window.selectedInstanceIndex && instanceVisible
+                                Repeater3D {
+                                    model: 12
+                                    delegate: Model {
+                                        required property int index
+                                        source: "#Cube"
+                                        position: index < 4
+                                            ? Qt.vector3d(0, (index % 2 === 0 ? -49 : 49), (index < 2 ? -49 : 49))
+                                            : index < 8
+                                                ? Qt.vector3d((index % 2 === 0 ? -49 : 49), 0, (index < 6 ? -49 : 49))
+                                                : Qt.vector3d((index % 2 === 0 ? -49 : 49), (index < 10 ? -49 : 49), 0)
+                                        scale: index < 4 ? Qt.vector3d(1, 0.012, 0.012)
+                                            : index < 8 ? Qt.vector3d(0.012, 1, 0.012)
+                                            : Qt.vector3d(0.012, 0.012, 1)
+                                        materials: PrincipledMaterial {
+                                            baseColor: "#61c9ac"
+                                            roughness: 0.35
+                                            metalness: 0.0
+                                        }
+                                    }
+                                }
+                            }
+
+                            Node {
+                                visible: window.normalsVisible && index === window.selectedInstanceIndex && instanceVisible
+                                Repeater3D {
+                                    model: meshGeometry.sampledFaceNormals
+                                    delegate: Model {
+                                        required property var modelData
+                                        source: "#Cube"
+                                        position: modelData.position
+                                        rotation: modelData.rotation
+                                        scale: Qt.vector3d(0.0007, 0.0007, modelData.length / 100)
+                                        materials: PrincipledMaterial {
+                                            baseColor: "#8ae2cf"
+                                            roughness: 0.3
+                                            metalness: 0.0
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Model {
+                        id: slicePlaneVisual
+                        source: "#Rectangle"
+                        visible: window.slicePlaneActive && importedGeometry.loaded
+                        position: window.slicePlaneScenePosition()
+                        rotation: window.slicePlaneSceneRotation()
+                        scale: Qt.vector3d(window.slicePlaneSize() / 100,
+                                           window.slicePlaneSize() / 100, 0.001)
+                        pickable: false
+                        materials: PrincipledMaterial {
+                            baseColor: "#ff8b45"
+                            opacity: 0.3
+                            roughness: 0.35
+                            metalness: 0.05
+                            cullMode: Material.NoCulling
+                        }
+                    }
+
+                    Model {
+                        visible: window.measurementStart !== null
+                        source: "#Sphere"
+                        position: window.measurementStart || Qt.vector3d(0, 0, 0)
+                        scale: Qt.vector3d(0.9, 0.9, 0.9)
+                        materials: PrincipledMaterial { baseColor: "#79dec2"; lighting: PrincipledMaterial.NoLighting }
+                    }
+                    Model {
+                        visible: window.measurementEnd !== null
+                        source: "#Sphere"
+                        position: window.measurementEnd || Qt.vector3d(0, 0, 0)
+                        scale: Qt.vector3d(0.9, 0.9, 0.9)
+                        materials: PrincipledMaterial { baseColor: "#e57b3e"; lighting: PrincipledMaterial.NoLighting }
+                    }
+
+                    MeshGeometry {
+                        id: importedGeometry
+                        onLoadFailed: function(message) { statusLabel.text = message }
+                        onLoadedChanged: {
+                            if (loaded) {
+                                statusLabel.text = `Loaded ${fileName}`
+                                sceneInstances.clear()
+                                for (const key of Object.keys(window.derivedGeometries))
+                                    window.destroyDerivedGeometry(key)
+                                sceneInstances.append({
+                                    instanceId: window.newSceneInstanceId(), name: fileName, piece: "main", geometryKey: "source",
+                                    sourceUrl: window.pendingImportUrl, backendModelId: "",
+                                    offsetX: 0, offsetY: 0, offsetZ: 0,
+                                    rotationX: 0, rotationY: 0, rotationZ: 0,
+                                    scaleX: 1, scaleY: 1, scaleZ: 1,
+                                    instanceVisible: true
+                                })
+                                window.setInstanceSelected(0)
+                                Qt.callLater(frameImportedModel)
+                            }
+                        }
+                    }
+
+                }
+            }
+
+            MouseArea {
+                id: viewportInput
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                hoverEnabled: true
+                // Keep Quick 3D and child controls from taking ownership of a
+                // slice-plane drag after the pointer has started moving.
+                preventStealing: true
+                cursorShape: window.slicePlaneActive
+                    ? (window.slicePlaneRotateMode ? Qt.SizeAllCursor : Qt.SizeVerCursor)
+                    : Qt.ArrowCursor
+                property point lastPosition
+                property point pressPosition
+                property int pressedInstanceIndex: -1
+                property vector3d pressOffset: Qt.vector3d(0, 0, 0)
+                property vector3d pressRotation: Qt.vector3d(0, 0, 0)
+                property vector3d pressScale: Qt.vector3d(1, 1, 1)
+                property var pressPlatePosition: null
+                property bool movedPointer: false
+                property bool draggingSlicePlane: false
+                property bool rotatingSlicePlane: false
+                property point sliceRotationLastPointer
+                property vector3d slicePointerAnchor: Qt.vector3d(0, 0, 0)
+
+                onPressed: function(mouse) {
+                    forceActiveFocus()
+                    lastPosition = Qt.point(mouse.x, mouse.y)
+                    pressPosition = Qt.point(mouse.x, mouse.y)
+                    movedPointer = false
+                    pressedInstanceIndex = -1
+                    pressPlatePosition = null
+                    if (mouse.button === Qt.LeftButton && window.slicePlaneActive) {
+                        if (window.slicePlaneRotateMode) {
+                            rotatingSlicePlane = true
+                            sliceRotationLastPointer = Qt.point(mouse.x, mouse.y)
+                            mouse.accepted = true
+                            return
+                        }
+                        draggingSlicePlane = window.beginSlicePlaneDrag(mouse.x, mouse.y)
+                        if (draggingSlicePlane) {
+                            mouse.accepted = true
+                            return
+                        }
+                    }
+                    if (mouse.button === Qt.LeftButton && window.measurementMode) {
+                        mouse.accepted = true
+                        return
+                    }
+                    if (mouse.button === Qt.RightButton) {
+                        const hit = view3d.pick(mouse.x, mouse.y)
+                        viewportContextMenu.instanceIndex = hit && hit.objectHit
+                            && hit.objectHit.instanceIndex !== undefined
+                            ? hit.objectHit.instanceIndex : -1
+                        if (viewportContextMenu.instanceIndex >= 0)
+                            window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                        viewportContextMenu.popup(view3d, mouse.x, mouse.y)
+                        mouse.accepted = true
+                        return
+                    }
+                    if (mouse.button === Qt.LeftButton) {
+                        const hit = view3d.pick(mouse.x, mouse.y)
+                        if (hit && hit.objectHit && hit.objectHit.instanceIndex !== undefined) {
+                            pressedInstanceIndex = hit.objectHit.instanceIndex
+                            window.setInstanceSelected(pressedInstanceIndex)
+                            pressOffset = window.modelOffset
+                            pressRotation = window.modelRotation
+                            pressScale = window.modelScale
+                            const mode = (mouse.modifiers & Qt.ControlModifier) ? 2
+                                : (mouse.modifiers & Qt.AltModifier) ? 1 : window.viewportTransformMode
+                            if (mode === 0 && window.viewportTransformAxis !== "Z")
+                                pressPlatePosition = window.screenToBuildPlate(mouse.x, mouse.y)
+                            dragTransformMode = mode
+                        }
+                    }
+                }
+
+                property int dragTransformMode: 0
+
+                onReleased: function(mouse) {
+                    if (mouse.button === Qt.LeftButton && rotatingSlicePlane) {
+                        rotatingSlicePlane = false
+                        statusLabel.text = "Slice plane rotated with mouse. Drag to position it or switch back to Move plane."
+                        return
+                    }
+                    if (mouse.button === Qt.LeftButton && draggingSlicePlane) {
+                        draggingSlicePlane = false
+                        window.slicePlaneDragging = false
+                        statusLabel.text = "Slice plane positioned. Adjust its origin or normal in the slice panel."
+                        return
+                    }
+                    if (mouse.button !== Qt.LeftButton || movedPointer)
+                        return
+                    const hit = view3d.pick(mouse.x, mouse.y)
+                    if (window.measurementMode) {
+                        if (hit && hit.objectHit && hit.objectHit.instanceIndex !== undefined)
+                            window.recordMeasurementPoint(hit.scenePosition)
+                        else
+                            statusLabel.text = "Measure: click a point on the model surface."
+                        return
+                    }
+                    if (hit && hit.objectHit && hit.objectHit.instanceIndex !== undefined) {
+                        window.setInstanceSelected(hit.objectHit.instanceIndex)
+                        statusLabel.text = "Model selected - drag to move on the build plate"
+                    } else {
+                        window.modelSelected = false
+                    }
+                }
+
+                onPositionChanged: function(mouse) {
+                    if (draggingSlicePlane) {
+                        const pointer = window.screenToCameraPlane(mouse.x, mouse.y, slicePointerAnchor)
+                        if (pointer !== null) {
+                            const delta = pointer.minus(slicePointerAnchor)
+                            const direction = window.sliceDragWorldPerMm
+                            const lengthSquared = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z
+                            if (lengthSquared > 1e-12) {
+                                const distance = (delta.x * direction.x + delta.y * direction.y + delta.z * direction.z) / lengthSquared
+                                const next = Qt.vector3d(window.sliceDragOrigin.x + window.sliceDragNormal.x * distance,
+                                                         window.sliceDragOrigin.y + window.sliceDragNormal.y * distance,
+                                                         window.sliceDragOrigin.z + window.sliceDragNormal.z * distance)
+                                slicePointX.value = Math.round(next.x * 100)
+                                slicePointY.value = Math.round(next.y * 100)
+                                slicePointZ.value = Math.round(next.z * 100)
+                            }
+                        }
+                        movedPointer = true
+                        return
+                    }
+                    if (rotatingSlicePlane) {
+                        const dx = mouse.x - sliceRotationLastPointer.x
+                        const dy = mouse.y - sliceRotationLastPointer.y
+                        sliceRotationLastPointer = Qt.point(mouse.x, mouse.y)
+                        const n = window.slicePlaneNormal()
+                        // Rotate in mesh-local space. The plane normal is stored
+                        // in that same coordinate system, so applying camera
+                        // world axes directly here made the displayed plane and
+                        // the editable normal disagree after camera/model moves.
+                        let right = Qt.vector3d(1, 0, 0)
+                        let rightDot = n.x
+                        right = Qt.vector3d(right.x - n.x * rightDot,
+                                            right.y - n.y * rightDot,
+                                            right.z - n.z * rightDot)
+                        let rightLength = Math.sqrt(right.x * right.x + right.y * right.y + right.z * right.z)
+                        if (rightLength < 1e-5) {
+                            right = Qt.vector3d(0, 1, 0)
+                            rightDot = n.y
+                            right = Qt.vector3d(right.x - n.x * rightDot,
+                                                right.y - n.y * rightDot,
+                                                right.z - n.z * rightDot)
+                            rightLength = Math.sqrt(right.x * right.x + right.y * right.y + right.z * right.z)
+                        }
+                        right = Qt.vector3d(right.x / rightLength, right.y / rightLength, right.z / rightLength)
+                        const up = Qt.vector3d(n.y * right.z - n.z * right.y,
+                                               n.z * right.x - n.x * right.z,
+                                               n.x * right.y - n.y * right.x)
+                        const rotateAround = function(v, axis, angle) {
+                            const c = Math.cos(angle), s = Math.sin(angle)
+                            const dot = v.x * axis.x + v.y * axis.y + v.z * axis.z
+                            const cross = Qt.vector3d(axis.y * v.z - axis.z * v.y,
+                                                      axis.z * v.x - axis.x * v.z,
+                                                      axis.x * v.y - axis.y * v.x)
+                            return Qt.vector3d(v.x * c + cross.x * s + axis.x * dot * (1 - c),
+                                               v.y * c + cross.y * s + axis.y * dot * (1 - c),
+                                               v.z * c + cross.z * s + axis.z * dot * (1 - c))
+                        }
+                        const yawed = rotateAround(n, up, -dx * 0.012)
+                        const rotated = rotateAround(yawed, right, dy * 0.012)
+                        window.setSlicePlaneNormal(rotated.x, rotated.y, rotated.z)
+                        sliceStatus.text = `Plane normal: ${rotated.x.toFixed(3)}, ${rotated.y.toFixed(3)}, ${rotated.z.toFixed(3)}`
+                        movedPointer = true
+                        return
+                    }
+                    if (!pressed)
+                        return
+                    if (Math.abs(mouse.x - pressPosition.x) + Math.abs(mouse.y - pressPosition.y) > 5)
+                        movedPointer = true
+                    const dx = mouse.x - lastPosition.x
+                    const dy = mouse.y - lastPosition.y
+                    lastPosition = Qt.point(mouse.x, mouse.y)
+
+                    if (mouse.buttons & Qt.LeftButton) {
+                        if (pressedInstanceIndex >= 0 && dragTransformMode === 2) {
+                            const factor = Math.exp((pressPosition.y - mouse.y) * 0.01)
+                            const clampScale = function(value) {
+                                const sign = value < 0 ? -1 : 1
+                                return sign * Math.max(0.01, Math.min(10000, Math.abs(value) * factor))
+                            }
+                            const axis = window.viewportTransformAxis
+                            const scaleX = uniformScaleEnabled || axis === "All" || axis === "X"
+                            const scaleY = uniformScaleEnabled || axis === "All" || axis === "Y"
+                            const scaleZ = uniformScaleEnabled || axis === "All" || axis === "Z"
+                            window.modelScale = Qt.vector3d(
+                                scaleX ? clampScale(pressScale.x) : pressScale.x,
+                                scaleY ? clampScale(pressScale.y) : pressScale.y,
+                                scaleZ ? clampScale(pressScale.z) : pressScale.z)
+                            statusLabel.text = `Scale ${axis}: ${(window.modelScale.x * 100).toFixed(1)}% / ${(window.modelScale.y * 100).toFixed(1)}% / ${(window.modelScale.z * 100).toFixed(1)}%`
+                        } else if (pressedInstanceIndex >= 0 && dragTransformMode === 1) {
+                            const axis = window.viewportTransformAxis
+                            const amount = axis === "X" ? (pressPosition.y - mouse.y) * 0.5
+                                : axis === "Y" ? (mouse.x - pressPosition.x) * 0.5
+                                : (mouse.x - pressPosition.x) * 0.5
+                            window.modelRotation = Qt.vector3d(
+                                pressRotation.x + (axis === "X" ? amount : 0),
+                                pressRotation.y + (axis === "Y" ? amount : 0),
+                                pressRotation.z + (axis === "All" || axis === "Z" ? amount : 0))
+                            statusLabel.text = `Rotate ${axis === "All" ? "Z" : axis}: ${amount.toFixed(1)} deg`
+                        } else if (pressedInstanceIndex >= 0 && pressPlatePosition !== null) {
+                            const platePosition = window.screenToBuildPlate(mouse.x, mouse.y)
+                            if (platePosition !== null) {
+                                const axis = window.viewportTransformAxis
+                                const pixelsToWorld = 2 * camera.position.z
+                                    * Math.tan(camera.fieldOfView * Math.PI / 360)
+                                    / Math.max(1, view3d.height)
+                                const deltaZ = (pressPosition.y - mouse.y) * pixelsToWorld
+                                window.modelOffset = Qt.vector3d(
+                                    pressOffset.x + (axis === "All" || axis === "X" ? platePosition.x - pressPlatePosition.x : 0),
+                                    pressOffset.y + (axis === "All" || axis === "Y" ? platePosition.y - pressPlatePosition.y : 0),
+                                    pressOffset.z + (axis === "Z" ? deltaZ : 0))
+                                statusLabel.text = `Move: X ${window.modelOffset.x.toFixed(2)} mm  Y ${window.modelOffset.y.toFixed(2)} mm  Z ${window.modelOffset.z.toFixed(2)} mm`
+                            }
+                        } else if (pressedInstanceIndex >= 0 && dragTransformMode === 0
+                                   && window.viewportTransformAxis === "Z") {
+                            const pixelsToWorld = 2 * camera.position.z
+                                * Math.tan(camera.fieldOfView * Math.PI / 360)
+                                / Math.max(1, view3d.height)
+                            window.modelOffset = Qt.vector3d(pressOffset.x, pressOffset.y,
+                                pressOffset.z + (pressPosition.y - mouse.y) * pixelsToWorld)
+                            statusLabel.text = `Move: Z ${window.modelOffset.z.toFixed(2)} mm`
+                        } else if (pressedInstanceIndex < 0) {
+                            cameraRig.eulerRotation = Qt.vector3d(
+                                Math.max(-88, Math.min(88, cameraRig.eulerRotation.x - dy * 0.35)),
+                                0,
+                                cameraRig.eulerRotation.z + dx * 0.35)
+                        }
+                    } else if (mouse.buttons & Qt.MiddleButton) {
+                        const viewHeight = 2 * camera.position.z
+                            * Math.tan(camera.fieldOfView * Math.PI / 360)
+                            / Math.max(1, height)
+                        const panDelta = cameraRig.mapDirectionToScene(
+                            Qt.vector3d(-dx * viewHeight, dy * viewHeight, 0))
+                        cameraRig.position = Qt.vector3d(
+                            cameraRig.position.x + panDelta.x,
+                            cameraRig.position.y + panDelta.y,
+                            cameraRig.position.z + panDelta.z)
+                    }
+                }
+
+                onWheel: function(wheel) {
+                    camera.position = Qt.vector3d(0, 0,
+                        Math.max(1, Math.min(100000, camera.position.z * (wheel.angleDelta.y > 0 ? 0.88 : 1.14))))
+                }
+            }
+
+            Menu {
+                id: viewportContextMenu
+                property int instanceIndex: -1
+                title: instanceIndex >= 0 ? sceneInstances.get(instanceIndex).name : "Viewport"
+
+                MenuItem {
+                    text: "Select"
+                    enabled: viewportContextMenu.instanceIndex >= 0
+                    onTriggered: window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                }
+                MenuItem {
+                    text: "Frame selected"
+                    enabled: viewportContextMenu.instanceIndex >= 0
+                    onTriggered: {
+                        window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                        frameImportedModel()
+                    }
+                }
+                MenuItem {
+                    text: "Place on bed"
+                    enabled: viewportContextMenu.instanceIndex >= 0
+                    onTriggered: {
+                        window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                        window.placeSelectedOnBed()
+                    }
+                }
+                MenuItem {
+                    text: "Center on build plate"
+                    enabled: viewportContextMenu.instanceIndex >= 0
+                    onTriggered: {
+                        window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                        window.centerSelectedOnPlate()
+                    }
+                }
+                MenuSeparator {}
+                MenuItem {
+                    text: "Duplicate"
+                    enabled: viewportContextMenu.instanceIndex >= 0
+                    onTriggered: {
+                        window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                        window.duplicateSelectedInstance()
+                    }
+                }
+                MenuItem {
+                    text: viewportContextMenu.instanceIndex >= 0
+                        && sceneInstances.get(viewportContextMenu.instanceIndex).instanceVisible ? "Hide" : "Show"
+                    enabled: viewportContextMenu.instanceIndex >= 0
+                    onTriggered: {
+                        window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                        window.modelVisible = !window.modelVisible
+                    }
+                }
+                MenuItem {
+                    text: "Reset transforms"
+                    enabled: viewportContextMenu.instanceIndex >= 0
+                    onTriggered: {
+                        window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                        window.modelOffset = Qt.vector3d(0, 0, 0)
+                        window.modelRotation = Qt.vector3d(0, 0, 0)
+                        window.modelScale = Qt.vector3d(1, 1, 1)
+                        frameImportedModel()
+                    }
+                }
+                MenuSeparator {}
+                Menu {
+                    title: "Mesh editing"
+                    enabled: importedGeometry.loaded
+
+                    MenuItem {
+                        text: "Analyze mesh health"
+                        onTriggered: {
+                            refreshMeshAnalysis()
+                            statusLabel.text = `Mesh analysis complete: ${meshAnalysis.triangles} triangles, ${meshAnalysis.degenerateTriangles} degenerate, ${meshAnalysis.boundaryEdges} boundary edges, ${meshAnalysis.nonManifoldEdges} non-manifold edges`
+                        }
+                    }
+                    MenuItem {
+                        text: "Repair mesh using weld tolerance ${ (repairTolerance.value / 100.0).toFixed(2) } mm"
+                        onTriggered: repairSelectedMesh()
+                    }
+                    MenuItem {
+                        text: "Slice by free plane..."
+                        onTriggered: {
+                            const geometry = window.selectedGeometry()
+                            slicePointX.value = Math.round(geometry.center.x * 100)
+                            slicePointY.value = Math.round(geometry.center.y * 100)
+                            slicePointZ.value = Math.round(geometry.center.z * 100)
+                            window.slicePlaneActive = true
+                            sliceDialog.open()
+                        }
+                    }
+                    Menu {
+                        title: "Set weld tolerance"
+                        MenuItem {
+                            text: "0.01 mm"
+                            onTriggered: repairTolerance.value = 1
+                        }
+                        MenuItem {
+                            text: "0.05 mm"
+                            onTriggered: repairTolerance.value = 5
+                        }
+                        MenuItem {
+                            text: "0.10 mm"
+                            onTriggered: repairTolerance.value = 10
+                        }
+                        MenuItem {
+                            text: "0.25 mm"
+                            onTriggered: repairTolerance.value = 25
+                        }
+                    }
+                }
+                MenuSeparator {}
+                MenuItem {
+                    text: "Remove from scene"
+                    enabled: viewportContextMenu.instanceIndex >= 0
+                    onTriggered: {
+                        window.setInstanceSelected(viewportContextMenu.instanceIndex)
+                        window.removeSelectedInstance()
+                    }
+                }
+                MenuItem {
+                    text: "Import model..."
+                    onTriggered: meshDialog.open()
+                }
+            }
+
+            DropArea {
+                id: meshDropArea
+                anchors.fill: parent
+
+                onEntered: function(drag) {
+                    drag.accepted = drag.hasUrls
+                }
+
+                onDropped: function(drop) {
+                    if (!drop.hasUrls || drop.urls.length === 0)
+                        return
+                    drop.acceptProposedAction()
+                    window.importMesh(drop.urls[0])
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    visible: meshDropArea.containsDrag
+                    color: "#a0121921"
+                    border.color: "#64c4b7"
+                    border.width: 2
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 8
+                        Label {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "DROP MESH TO IMPORT"
+                            color: "#d6f1ec"
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 1
+                        }
+                        Label {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "STL, OBJ, or 3MF"
+                            color: "#91aaa8"
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+            }
+
+            Row {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: 14
+                spacing: 6
+
+                Repeater {
+                    model: ["Top", "Front", "Right", "Iso"]
+                    delegate: ToolButton {
+                        required property string modelData
+                        text: modelData
+                        onClicked: setCameraView(modelData)
+                        background: Rectangle {
+                            color: parent.down ? "#424b43" : "#202723"
+                            border.color: "#424b43"
+                            radius: 3
+                        }
+                        contentItem: Text {
+                            text: parent.text
+                            color: "#e5e2da"
+                            font.pixelSize: 10
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        ToolTip.visible: hovered
+                        ToolTip.text: `${modelData} view (Ctrl+${modelData === "Top" ? "1" : modelData === "Front" ? "2" : modelData === "Right" ? "3" : "4"})`
+                    }
+                }
+                ToolButton {
+                    text: "Frame"
+                    onClicked: frameImportedModel()
+                    enabled: importedGeometry.loaded
+                    background: Rectangle { color: parent.down ? "#424b43" : "#202723"; border.color: "#424b43"; radius: 3 }
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                ToolButton {
+                    text: "Wire"
+                    enabled: importedGeometry.loaded
+                    checked: window.wireframeMode
+                    onClicked: window.wireframeMode = !window.wireframeMode
+                    background: Rectangle { color: parent.checked ? "#254d43" : (parent.down ? "#424b43" : "#202723"); border.color: parent.checked ? "#61c9ac" : "#424b43"; radius: 3 }
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Toggle wireframe rendering"
+                }
+                ToolButton {
+                    text: "Bounds"
+                    enabled: importedGeometry.loaded && selectedInstanceIndex >= 0
+                    checked: window.boundsVisible
+                    onClicked: window.boundsVisible = !window.boundsVisible
+                    background: Rectangle { color: parent.checked ? "#254d43" : (parent.down ? "#424b43" : "#202723"); border.color: parent.checked ? "#61c9ac" : "#424b43"; radius: 3 }
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Show selected model bounds"
+                }
+                ToolButton {
+                    text: "Normals"
+                    enabled: importedGeometry.loaded && selectedInstanceIndex >= 0
+                    checked: window.normalsVisible
+                    onClicked: window.normalsVisible = !window.normalsVisible
+                    background: Rectangle { color: parent.checked ? "#254d43" : (parent.down ? "#424b43" : "#202723"); border.color: parent.checked ? "#61c9ac" : "#424b43"; radius: 3 }
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Show sampled face normal directions"
+                }
+                ToolButton {
+                    text: "Measure"
+                    enabled: importedGeometry.loaded
+                    checked: window.measurementMode
+                    onClicked: {
+                        window.measurementMode = !window.measurementMode
+                        if (window.measurementMode)
+                            statusLabel.text = "Measure: select a first point on the model."
+                        else
+                            statusLabel.text = "Measure mode off"
+                    }
+                    background: Rectangle { color: parent.checked ? "#254d43" : (parent.down ? "#424b43" : "#202723"); border.color: parent.checked ? "#61c9ac" : "#424b43"; radius: 3 }
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Click two points on the selected model to measure distance in millimetres"
+                }
+                ToolButton {
+                    text: "Clear"
+                    visible: window.measurementStart !== null
+                    onClicked: window.clearMeasurement()
+                    background: Rectangle { color: parent.down ? "#424b43" : "#202723"; border.color: "#424b43"; radius: 3 }
+                    contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    ToolTip.visible: hovered
+                    ToolTip.text: "Clear measured points"
+                }
+            }
+
+            Rectangle {
+                id: transformToolbar
+                anchors.top: parent.top
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.topMargin: 12
+                z: 20
+                width: transformControls.implicitWidth + 20
+                height: transformControls.implicitHeight + 16
+                color: "#e6121921"
+                border.color: "#3b4b5a"
+                radius: 5
+
+                ColumnLayout {
+                    id: transformControls
+                    anchors.centerIn: parent
+                    spacing: 6
+
+                    RowLayout {
+                        spacing: 5
+                        Repeater {
+                            model: ["Move", "Rotate", "Scale"]
+                            delegate: ToolButton {
+                                required property int index
+                                required property string modelData
+                                text: `${modelData} (${["G", "R", "S"][index]})`
+                                checked: window.viewportTransformMode === index
+                                enabled: importedGeometry.loaded && window.modelSelected
+                                onClicked: window.setTransformMode(index)
+                                background: Rectangle {
+                                    color: parent.checked ? "#254d43" : (parent.down ? "#424b43" : "#202723")
+                                    border.color: parent.checked ? "#61c9ac" : "#424b43"
+                                    radius: 3
+                                }
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: parent.enabled ? (parent.checked ? "#a8f2d6" : "#e5e2da") : "#746f66"
+                                    font.pixelSize: 10
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        spacing: 4
+                        Label { text: "AXIS"; color: "#a8947f"; font.pixelSize: 9 }
+                        Repeater {
+                            model: ["All", "X", "Y", "Z"]
+                            delegate: ToolButton {
+                                required property string modelData
+                                text: modelData
+                                checked: window.viewportTransformAxis === modelData
+                                enabled: importedGeometry.loaded && window.modelSelected
+                                onClicked: window.setTransformAxis(modelData)
+                                background: Rectangle {
+                                    color: parent.checked ? "#254d43" : (parent.down ? "#424b43" : "#202723")
+                                    border.color: parent.checked ? "#61c9ac" : "#424b43"
+                                    radius: 3
+                                }
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: parent.enabled ? "#e5e2da" : "#746f66"
+                                    font.pixelSize: 9
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                        }
+                        Label { text: "Ctrl scale | Alt rotate"; color: "#a8947f"; font.pixelSize: 9; Layout.leftMargin: 4 }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: viewportTransformPanel
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.rightMargin: 14
+                z: 21
+                width: 220
+                height: transformEditor.implicitHeight + 24
+                visible: importedGeometry.loaded
+                color: "#ed171b18"
+                border.color: window.modelSelected ? "#8b5634" : "#414840"
+                radius: 5
+
+                ColumnLayout {
+                    id: transformEditor
+                    anchors.fill: parent
+                    anchors.margins: 11
+                    spacing: 8
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label {
+                            text: "TRANSFORM"
+                            color: "#d7b28e"
+                            font.pixelSize: 10
+                            font.weight: Font.Bold
+                            font.letterSpacing: 1
+                        }
+                        Item { Layout.fillWidth: true }
+                        Label {
+                            text: window.modelSelected ? "ACTIVE" : "SELECT MODEL"
+                            color: window.modelSelected ? "#79dec2" : "#8d8a80"
+                            font.pixelSize: 8
+                            font.family: "monospace"
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Repeater {
+                            model: ["Move", "Rotate", "Scale"]
+                            delegate: ToolButton {
+                                required property int index
+                                required property string modelData
+                                Layout.fillWidth: true
+                                text: modelData
+                                checked: window.viewportTransformMode === index
+                                enabled: window.modelSelected
+                                onClicked: window.setTransformMode(index)
+                                background: Rectangle {
+                                    color: parent.checked ? "#345c4e" : "#222923"
+                                    border.color: parent.checked ? "#79dec2" : "#414840"
+                                    radius: 3
+                                }
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: parent.enabled ? (parent.checked ? "#b8ffe5" : "#d5d0c7") : "#746f66"
+                                    font.pixelSize: 9
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label {
+                            text: window.viewportTransformMode === 0 ? "POSITION  /  MM"
+                                : window.viewportTransformMode === 1 ? "ROTATION  /  DEG" : "SCALE  /  %"
+                            color: "#92877c"
+                            font.pixelSize: 8
+                            font.weight: Font.Bold
+                            font.letterSpacing: 0.6
+                        }
+                        Item { Layout.fillWidth: true }
+                        CheckBox {
+                            visible: window.viewportTransformMode === 2
+                            text: "Uniform"
+                            checked: window.uniformScaleEnabled
+                            enabled: window.modelSelected
+                            onToggled: window.uniformScaleEnabled = checked
+                            contentItem: Text {
+                                text: parent.text
+                                color: "#bcb7ad"
+                                font.pixelSize: 9
+                                leftPadding: 3
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            indicator: Rectangle {
+                                implicitWidth: 13
+                                implicitHeight: 13
+                                x: 0
+                                y: parent.height / 2 - height / 2
+                                radius: 2
+                                color: parent.checked ? "#257b63" : "#191f1c"
+                                border.color: parent.checked ? "#79dec2" : "#596357"
+                                Text { anchors.centerIn: parent; text: "✓"; color: "white"; font.pixelSize: 9; visible: parent.parent.checked }
+                            }
+                        }
+                    }
+
+                    Repeater {
+                        model: ["X", "Y", "Z"]
+                        delegate: RowLayout {
+                            required property string modelData
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Label {
+                                text: modelData
+                                color: modelData === "X" ? "#e98a70" : modelData === "Y" ? "#79dec2" : "#8ca8ef"
+                                font.pixelSize: 10
+                                font.weight: Font.Bold
+                                font.family: "monospace"
+                                Layout.preferredWidth: 12
+                            }
+                            SpinBox {
+                                Layout.fillWidth: true
+                                enabled: window.modelSelected
+                                editable: true
+                                from: window.viewportTransformMode === 2 ? -100000000 : -3600000
+                                to: 360000000
+                                stepSize: window.viewportTransformMode === 0 ? 100 : window.viewportTransformMode === 1 ? 100 : 100
+                                value: {
+                                    const axisValue = modelData === "X"
+                                        ? (window.viewportTransformMode === 0 ? window.modelOffset.x : window.viewportTransformMode === 1 ? window.modelRotation.x : window.modelScale.x)
+                                        : modelData === "Y"
+                                            ? (window.viewportTransformMode === 0 ? window.modelOffset.y : window.viewportTransformMode === 1 ? window.modelRotation.y : window.modelScale.y)
+                                            : (window.viewportTransformMode === 0 ? window.modelOffset.z : window.viewportTransformMode === 1 ? window.modelRotation.z : window.modelScale.z)
+                                    return window.viewportTransformMode === 2 ? Math.round(axisValue * 10000) : Math.round(axisValue * 100)
+                                }
+                                textFromValue: function(value) {
+                                    return window.viewportTransformMode === 2
+                                        ? (value / 100).toFixed(2) + "%"
+                                        : (value / 100).toFixed(2)
+                                }
+                                valueFromText: function(text) {
+                                    const parsed = Number(text.replace("%", ""))
+                                    return Math.round(parsed * (window.viewportTransformMode === 2 ? 100 : 100))
+                                }
+                                onValueModified: {
+                                    const numeric = value / 100
+                                    if (window.viewportTransformMode === 0) {
+                                        if (modelData === "X") window.modelOffset = Qt.vector3d(numeric, window.modelOffset.y, window.modelOffset.z)
+                                        else if (modelData === "Y") window.modelOffset = Qt.vector3d(window.modelOffset.x, numeric, window.modelOffset.z)
+                                        else window.modelOffset = Qt.vector3d(window.modelOffset.x, window.modelOffset.y, numeric)
+                                    } else if (window.viewportTransformMode === 1) {
+                                        if (modelData === "X") window.modelRotation = Qt.vector3d(numeric, window.modelRotation.y, window.modelRotation.z)
+                                        else if (modelData === "Y") window.modelRotation = Qt.vector3d(window.modelRotation.x, numeric, window.modelRotation.z)
+                                        else window.modelRotation = Qt.vector3d(window.modelRotation.x, window.modelRotation.y, numeric)
+                                    } else {
+                                        const scaleValue = value / 10000
+                                        if (Math.abs(scaleValue) < 0.01) return
+                                        window.applyNumericScale(modelData, scaleValue)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Shortcut {
+                sequence: "G"
+                context: Qt.WindowShortcut
+                onActivated: if (viewportInput.activeFocus && modelSelected) setTransformMode(0)
+            }
+            Shortcut {
+                sequence: "R"
+                context: Qt.WindowShortcut
+                onActivated: if (viewportInput.activeFocus && modelSelected) setTransformMode(1)
+            }
+            Shortcut {
+                sequence: "S"
+                context: Qt.WindowShortcut
+                onActivated: if (viewportInput.activeFocus && modelSelected) setTransformMode(2)
+            }
+            Shortcut {
+                sequence: "X"
+                context: Qt.WindowShortcut
+                onActivated: if (viewportInput.activeFocus && modelSelected) setTransformAxis("X")
+            }
+            Shortcut {
+                sequence: "Y"
+                context: Qt.WindowShortcut
+                onActivated: if (viewportInput.activeFocus && modelSelected) setTransformAxis("Y")
+            }
+            Shortcut {
+                sequence: "Z"
+                context: Qt.WindowShortcut
+                onActivated: if (viewportInput.activeFocus && modelSelected) setTransformAxis("Z")
+            }
+
+            Item {
+                id: orientationGizmo
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.rightMargin: 18
+                anchors.bottomMargin: 88
+                width: 116
+                height: 116
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 8
+                    height: 8
+                    radius: 4
+                    color: "#d9ad70"
+                    border.color: "#202723"
+                }
+
+                Repeater {
+                    model: [
+                        { axis: "X", direction: Qt.vector3d(1, 0, 0), color: "#f08464" },
+                        { axis: "Y", direction: Qt.vector3d(0, 1, 0), color: "#79dec2" },
+                        { axis: "Z", direction: Qt.vector3d(0, 0, 1), color: "#74a9d2" }
+                    ]
+                    delegate: Item {
+                        id: axisDelegate
+                        required property var modelData
+                        property vector3d screenDirection: cameraRig.mapDirectionFromScene(modelData.direction)
+                        property real axisLength: 40
+                        width: 1
+                        height: 1
+                        x: orientationGizmo.width * 0.5
+                        y: orientationGizmo.height * 0.5
+
+                        Rectangle {
+                            width: axisLength
+                            height: 2
+                            color: modelData.color
+                            opacity: 0.85
+                            transform: Rotation {
+                                origin.x: 0
+                                origin.y: 1
+                                angle: Math.atan2(-screenDirection.y, screenDirection.x) * 180 / Math.PI
+                            }
+                        }
+
+                        Repeater {
+                            model: [-1, 1]
+                            delegate: ToolButton {
+                                required property int modelData
+                                property string axisName: axisDelegate.modelData.axis
+                                property color axisColor: axisDelegate.modelData.color
+                                property int axisSide: modelData
+                                width: 26
+                                height: 26
+                                x: axisDelegate.screenDirection.x * axisDelegate.axisLength * axisSide - width * 0.5
+                                y: -axisDelegate.screenDirection.y * axisDelegate.axisLength * axisSide - height * 0.5
+                                text: `${axisSide > 0 ? "+" : "-"}${axisName}`
+                                onClicked: window.setCameraAxis(axisName, axisSide)
+                                background: Rectangle {
+                                    radius: width * 0.5
+                                    color: parent.down ? "#424b43" : "#141817"
+                                    border.color: parent.axisColor
+                                    border.width: 1
+                                }
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: parent.axisColor
+                                    font.pixelSize: 9
+                                    font.weight: Font.DemiBold
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                ToolTip.visible: hovered
+                                ToolTip.text: `Look along ${text}`
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                anchors.margins: 14
+                width: 292
+                height: 54
+                radius: 3
+                color: "#141817"
+                border.color: "#39433c"
+                opacity: 0.94
+                Column {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: 12
+                    spacing: 3
+                    Label { id: statusLabel; text: "Move All | Drag: apply tool  |  Alt: rotate  |  Ctrl: scale  |  Middle: pan"; color: "#e5e2da"; font.pixelSize: 10 }
+                    Label {
+                        text: importedGeometry.loaded
+                            ? `${window.selectedWorldDimensions().z.toFixed(1)} mm world height`
+                            : "STL / OBJ / 3MF import"
+                        color: "#aa9c89"
+                        font.pixelSize: 9
+                    }
+                }
+            }
+
+            FileDialog {
+                id: meshDialog
+                title: "Import a mesh"
+                nameFilters: ["Mesh files (*.stl *.obj *.3mf)", "STL mesh (*.stl)", "OBJ mesh (*.obj)", "3MF project (*.3mf)", "All files (*)"]
+                onAccepted: {
+                    window.importMesh(selectedFile)
+                }
+            }
+
+            Dialog {
+                id: sliceDialog
+                parent: Overlay.overlay
+                title: "Slice mesh by free plane"
+                modal: false
+                x: 12
+                y: 54
+                width: Math.min(400, window.width - 24)
+                height: Math.min(650, window.height - 72)
+                standardButtons: Dialog.NoButton
+                background: Rectangle { color: "#171c19"; border.color: "#e57b3e"; radius: 5 }
+                contentItem: ColumnLayout {
+                    spacing: 9
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Drag in the viewport to position or tilt the cut plane. Values are in millimetres."
+                        color: "#d8d0c5"
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 11
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button {
+                            text: "MOVE PLANE"
+                            Accessible.name: "Move slice plane"
+                            checkable: true
+                            checked: !window.slicePlaneRotateMode
+                            onClicked: window.slicePlaneRotateMode = false
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 40
+                            contentItem: Text { text: "MOVE PLANE"; color: window.slicePlaneRotateMode ? "#f3eee6" : "#101512"; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            background: Rectangle { color: !window.slicePlaneRotateMode ? "#79dec2" : "#202723"; border.color: "#a2f0d9"; radius: 3 }
+                        }
+                        Button {
+                            text: "ROTATE PLANE"
+                            Accessible.name: "Rotate slice plane"
+                            checkable: true
+                            checked: window.slicePlaneRotateMode
+                            onClicked: window.slicePlaneRotateMode = true
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 40
+                            contentItem: Text { text: "ROTATE PLANE"; color: window.slicePlaneRotateMode ? "#101512" : "#f3eee6"; font.pixelSize: 12; font.weight: Font.Bold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            background: Rectangle { color: window.slicePlaneRotateMode ? "#79dec2" : "#202723"; border.color: "#a2f0d9"; radius: 3 }
+                        }
+                    }
+                    Button {
+                        text: sliceKeepSide.currentIndex === 2 ? "CUT & SEPARATE" : "CUT MESH"
+                        Accessible.name: sliceKeepSide.currentIndex === 2 ? "Cut mesh and separate both sections" : "Cut mesh with current plane"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 48
+                        enabled: importedGeometry.loaded && window.slicePlaneActive
+                            && window.pendingSliceRequestId === ""
+                            && window.selectedInstanceIndex >= 0
+                            && sceneInstances.get(window.selectedInstanceIndex).backendModelId !== ""
+                        onClicked: applyPlaneSlice()
+                        contentItem: Text { text: parent.text; color: "#101512"; font.pixelSize: 14; font.weight: Font.Bold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { color: parent.enabled ? "#f28c45" : "#76563f"; border.color: "#ffbd79"; radius: 3 }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: window.selectedInstanceIndex >= 0
+                            && sceneInstances.get(window.selectedInstanceIndex).backendModelId === ""
+                        text: "Register this STL or OBJ with the local geometry service before slicing. 3MF service slicing is not available."
+                        color: "#e5a16d"
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 10
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: window.slicePlaneRotateMode ? "ROTATE MODE - drag in the viewport to tilt the plane." : "MOVE MODE - drag in the viewport to slide the plane."
+                        color: "#ffad70"
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 10
+                    }
+                    ScrollView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    contentWidth: availableWidth
+                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                    ColumnLayout {
+                    width: parent.availableWidth
+                    spacing: 12
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Keep this panel open beside the viewport. Choose Move or Rotate, then drag in the viewport. Coordinates use mesh millimetres; the imported file stays unchanged."
+                        color: "#d8d0c5"
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 11
+                    }
+                    Label { text: "PLANE ORIGIN / MM"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        Label { text: "X"; color: "#e57b3e" }
+                        SpinBox { id: slicePointX; from: -100000000; to: 100000000; editable: true; Accessible.name: "Plane origin X in millimetres"; font.pixelSize: 12; palette.text: "#f3eee6"; palette.base: "#202723"; textFromValue: function(v) { return (v / 100).toFixed(2) }; valueFromText: function(t) { return Math.round(Number(t) * 100) }; Layout.fillWidth: true; Layout.minimumWidth: 100; background: Rectangle { color: "#202723"; border.color: parent.activeFocus ? "#79dec2" : "#56645b"; radius: 3 } }
+                        Label { text: "Y"; color: "#e57b3e" }
+                        SpinBox { id: slicePointY; from: -100000000; to: 100000000; editable: true; Accessible.name: "Plane origin Y in millimetres"; font.pixelSize: 12; palette.text: "#f3eee6"; palette.base: "#202723"; textFromValue: function(v) { return (v / 100).toFixed(2) }; valueFromText: function(t) { return Math.round(Number(t) * 100) }; Layout.fillWidth: true; Layout.minimumWidth: 100; background: Rectangle { color: "#202723"; border.color: parent.activeFocus ? "#79dec2" : "#56645b"; radius: 3 } }
+                        Label { text: "Z"; color: "#e57b3e" }
+                        SpinBox { id: slicePointZ; from: -100000000; to: 100000000; editable: true; Accessible.name: "Plane origin Z in millimetres"; font.pixelSize: 12; palette.text: "#f3eee6"; palette.base: "#202723"; textFromValue: function(v) { return (v / 100).toFixed(2) }; valueFromText: function(t) { return Math.round(Number(t) * 100) }; Layout.fillWidth: true; Layout.minimumWidth: 100; background: Rectangle { color: "#202723"; border.color: parent.activeFocus ? "#79dec2" : "#56645b"; radius: 3 } }
+                    }
+                    Label { text: "PLANE NORMAL / DIRECTION"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        Label { text: "X"; color: "#e57b3e" }
+                        SpinBox { id: sliceNormalX; from: -10000; to: 10000; value: 0; editable: true; Accessible.name: "Plane normal X direction"; font.pixelSize: 12; palette.text: "#f3eee6"; palette.base: "#202723"; textFromValue: function(v) { return (v / 10000).toFixed(4) }; valueFromText: function(t) { return Math.round(Number(t) * 10000) }; Layout.fillWidth: true; Layout.minimumWidth: 100; background: Rectangle { color: "#202723"; border.color: parent.activeFocus ? "#79dec2" : "#56645b"; radius: 3 } }
+                        Label { text: "Y"; color: "#e57b3e" }
+                        SpinBox { id: sliceNormalY; from: -10000; to: 10000; value: 0; editable: true; Accessible.name: "Plane normal Y direction"; font.pixelSize: 12; palette.text: "#f3eee6"; palette.base: "#202723"; textFromValue: function(v) { return (v / 10000).toFixed(4) }; valueFromText: function(t) { return Math.round(Number(t) * 10000) }; Layout.fillWidth: true; Layout.minimumWidth: 100; background: Rectangle { color: "#202723"; border.color: parent.activeFocus ? "#79dec2" : "#56645b"; radius: 3 } }
+                        Label { text: "Z"; color: "#e57b3e" }
+                        SpinBox { id: sliceNormalZ; from: -10000; to: 10000; value: 10000; editable: true; Accessible.name: "Plane normal Z direction"; font.pixelSize: 12; palette.text: "#f3eee6"; palette.base: "#202723"; textFromValue: function(v) { return (v / 10000).toFixed(4) }; valueFromText: function(t) { return Math.round(Number(t) * 10000) }; Layout.fillWidth: true; Layout.minimumWidth: 100; background: Rectangle { color: "#202723"; border.color: parent.activeFocus ? "#79dec2" : "#56645b"; radius: 3 } }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: "Keep side"; color: "#d8d0c5" }
+                        ComboBox { id: sliceKeepSide; model: ["Negative normal side", "Positive normal side", "Keep both, separate side-by-side"]; currentIndex: 1; Layout.fillWidth: true }
+                    }
+                    Label { id: sliceStatus; Layout.fillWidth: true; color: "#e5a16d"; wrapMode: Text.WordWrap; font.pixelSize: 10 }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Item { Layout.fillWidth: true }
+                        Button { text: "Hide controls"; onClicked: sliceDialog.close() }
+                    }
+                    }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: slicePlaneBadge
+                visible: window.slicePlaneActive && !sliceDialog.visible
+                z: 20
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.leftMargin: 12
+                anchors.topMargin: 12
+                width: sliceBadgeRow.implicitWidth + 20
+                height: 36
+                radius: 4
+                color: "#171c19"
+                border.color: "#e57b3e"
+                Row {
+                    id: sliceBadgeRow
+                    anchors.centerIn: parent
+                    spacing: 8
+                    Label { text: "SLICE PLANE ACTIVE"; color: "#ffad70"; font.pixelSize: 9; font.weight: Font.Bold }
+                    ToolButton {
+                        text: "Controls"
+                        onClicked: sliceDialog.open()
+                        contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                    ToolButton {
+                        text: "Exit"
+                        onClicked: window.slicePlaneActive = false
+                        contentItem: Text { text: parent.text; color: "#ffad70"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                }
+            }
+        }
+    }
+
+    function frameImportedModel() {
+        const geometry = selectedGeometry()
+        if (!geometry || !geometry.loaded)
+            return
+        const activeModel = selectedInstanceIndex >= 0 ? instanceRepeater.objectAt(selectedInstanceIndex) : null
+        if (!activeModel)
+            return
+        // Aim at the transformed bounds center, while keeping the current
+        // translation, rotation, and scale intact when the user presses Frame.
+        cameraRig.position = activeModel.mapPositionToScene(
+            Qt.vector3d(0, 0, geometry.dimensions.z * 0.5))
+        // Fit the full bounding sphere inside both viewport axes. This works
+        // for small parts and tall/flat parts, independent of window aspect.
+        const d = geometry.dimensions
+        const scaleFactor = Math.max(Math.abs(activeModel.scale.x), Math.abs(activeModel.scale.y), Math.abs(activeModel.scale.z))
+        const radius = Math.max(Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) * 0.5 * scaleFactor, 0.5)
+        const aspect = Math.max(0.1, view3d.width / Math.max(1, view3d.height))
+        const verticalHalfFov = camera.fieldOfView * Math.PI / 360
+        const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * aspect)
+        const limitingHalfFov = Math.min(verticalHalfFov, horizontalHalfFov)
+        const fitDistance = radius / Math.sin(limitingHalfFov) * 1.12
+        camera.position = Qt.vector3d(0, 0, Math.max(1, fitDistance))
+        window.modelSelected = true
+    }
+
+    function screenToBuildPlate(x, y) {
+        // Map two points along the pointer's camera ray into slicer space,
+        // then intersect that ray with the canonical Z=0 build plate.
+        const nearPoint = view3d.mapTo3DScene(Qt.vector3d(x, y, 0))
+        const farPoint = view3d.mapTo3DScene(Qt.vector3d(x, y, camera.clipFar * 0.9))
+        const rayZ = farPoint.z - nearPoint.z
+        if (Math.abs(rayZ) < 1e-7)
+            return null
+
+        const fraction = -nearPoint.z / rayZ
+        if (fraction < 0 || fraction > 1)
+            return null
+
+        return Qt.vector3d(
+            nearPoint.x + (farPoint.x - nearPoint.x) * fraction,
+            nearPoint.y + (farPoint.y - nearPoint.y) * fraction,
+            0)
+    }
+
+    function slicePlaneNormal() {
+        const n = Qt.vector3d(sliceNormalX.value / 10000.0, sliceNormalY.value / 10000.0, sliceNormalZ.value / 10000.0)
+        const length = Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z)
+        return length > 1e-8 ? Qt.vector3d(n.x / length, n.y / length, n.z / length) : Qt.vector3d(0, 0, 0)
+    }
+
+    function setSlicePlaneNormal(x, y, z) {
+        const length = Math.sqrt(x * x + y * y + z * z)
+        if (length < 1e-8)
+            return
+        sliceNormalX.value = Math.round(x / length * 10000)
+        sliceNormalY.value = Math.round(y / length * 10000)
+        sliceNormalZ.value = Math.round(z / length * 10000)
+    }
+
+    function slicePlaneScenePosition() {
+        const activeModel = selectedInstanceIndex >= 0 ? instanceRepeater.objectAt(selectedInstanceIndex) : null
+        const geometry = selectedGeometry()
+        if (!activeModel || !geometry)
+            return Qt.vector3d(0, 0, 0)
+        const baseZ = geometry.center.z - geometry.dimensions.z * 0.5
+        const local = Qt.vector3d(slicePointX.value / 100.0 - geometry.center.x,
+                                  slicePointY.value / 100.0 - geometry.center.y,
+                                  slicePointZ.value / 100.0 - baseZ)
+        return activeModel.mapPositionToScene(local)
+    }
+
+    function slicePlaneSceneRotation() {
+        const activeModel = selectedInstanceIndex >= 0 ? instanceRepeater.objectAt(selectedInstanceIndex) : null
+        let n = slicePlaneNormal()
+        if (!activeModel || (n.x === 0 && n.y === 0 && n.z === 0))
+            return Qt.quaternion(1, 0, 0, 0)
+        // Convert the source-space normal correctly through non-uniform scale,
+        // then orient the rectangle's local +Z axis to it in scene space.
+        const localDirection = Qt.vector3d(n.x / Math.max(Math.abs(activeModel.scale.x), 1e-8),
+                                           n.y / Math.max(Math.abs(activeModel.scale.y), 1e-8),
+                                           n.z / Math.max(Math.abs(activeModel.scale.z), 1e-8))
+        const world = activeModel.mapDirectionToScene(localDirection)
+        const length = Math.sqrt(world.x * world.x + world.y * world.y + world.z * world.z)
+        if (length < 1e-8)
+            return Qt.quaternion(1, 0, 0, 0)
+        const x = world.x / length, y = world.y / length, z = world.z / length
+        const dot = Math.max(-1, Math.min(1, z))
+        if (dot < -0.999999)
+            return Qt.quaternion(0, 0, 1, 0)
+        const s = Math.sqrt(2 * (1 + dot))
+        return Qt.quaternion(s * 0.5, -y / s, x / s, 0)
+    }
+
+    function slicePlaneSize() {
+        const d = selectedGeometry().dimensions
+        return Math.max(d.x, d.y, d.z, 1) * 1.6
+    }
+
+    function screenToCameraPlane(x, y, anchor) {
+        const nearPoint = view3d.mapTo3DScene(Qt.vector3d(x, y, 0))
+        const farPoint = view3d.mapTo3DScene(Qt.vector3d(x, y, camera.clipFar * 0.9))
+        const n = camera.mapDirectionToScene(Qt.vector3d(0, 0, 1)).normalized()
+        const ray = farPoint.minus(nearPoint)
+        const denominator = ray.x * n.x + ray.y * n.y + ray.z * n.z
+        if (Math.abs(denominator) < 1e-8)
+            return null
+        const offset = anchor.minus(nearPoint)
+        const t = (offset.x * n.x + offset.y * n.y + offset.z * n.z) / denominator
+        return nearPoint.plus(ray.times(t))
+    }
+
+    function beginSlicePlaneDrag(x, y) {
+        const activeModel = selectedInstanceIndex >= 0 ? instanceRepeater.objectAt(selectedInstanceIndex) : null
+        const n = slicePlaneNormal()
+        if (!activeModel || (n.x === 0 && n.y === 0 && n.z === 0)) {
+            sliceStatus.text = "Enter a non-zero plane normal and select a model."
+            return false
+        }
+        const point = slicePlaneScenePosition()
+        const pointer = screenToCameraPlane(x, y, point)
+        const baseZ = importedGeometry.center.z - importedGeometry.dimensions.z * 0.5
+        const localDirection = Qt.vector3d(n.x / Math.max(Math.abs(activeModel.scale.x), 1e-8),
+                                           n.y / Math.max(Math.abs(activeModel.scale.y), 1e-8),
+                                           n.z / Math.max(Math.abs(activeModel.scale.z), 1e-8))
+        sliceDragWorldPerMm = activeModel.mapDirectionToScene(localDirection)
+        sliceDragOrigin = Qt.vector3d(slicePointX.value / 100.0, slicePointY.value / 100.0, slicePointZ.value / 100.0)
+        sliceDragNormal = n
+        sliceDragWorldAnchor = point
+        slicePlaneDragging = pointer !== null
+        viewportInput.slicePointerAnchor = pointer !== null ? pointer : point
+        if (pointer === null) {
+            sliceStatus.text = "Cannot start plane drag from this camera angle."
+            return false
+        }
+        sliceStatus.text = "Dragging slice plane along its normal..."
+        return true
+    }
+
+    function importMesh(url) {
+        const path = url.toString().toLowerCase()
+        window.pendingImportUrl = url.toString()
+        let loaded = false
+        if (path.endsWith(".obj")) loaded = importedGeometry.loadObj(url)
+        else if (path.endsWith(".3mf")) loaded = importedGeometry.load3mf(url)
+        else if (path.endsWith(".stl")) loaded = importedGeometry.loadStl(url)
+        else statusLabel.text = "Supported mesh files are STL, OBJ, and 3MF"
+        if (!loaded)
+            return
+        if (path.endsWith(".stl") || path.endsWith(".obj")) {
+            statusLabel.text = "Imported locally. Registering source with geometry service..."
+            sliceCommandClient.registerSource(url, importedGeometry.fileName)
+        } else {
+            statusLabel.text = "3MF loaded locally. Service-backed slicing supports STL and OBJ."
+        }
+    }
+
+    function selectedWorldDimensions() {
+        const source = selectedGeometry().dimensions
+        const activeModel = selectedInstanceIndex >= 0 ? instanceRepeater.objectAt(selectedInstanceIndex) : null
+        if (!activeModel)
+            return source
+
+        // Map the eight source-bound corners through the renderer transform
+        // so rotation and signed scale produce accurate world-aligned bounds.
+        let minX = Number.POSITIVE_INFINITY
+        let minY = Number.POSITIVE_INFINITY
+        let minZ = Number.POSITIVE_INFINITY
+        let maxX = Number.NEGATIVE_INFINITY
+        let maxY = Number.NEGATIVE_INFINITY
+        let maxZ = Number.NEGATIVE_INFINITY
+        for (let corner = 0; corner < 8; ++corner) {
+            const local = Qt.vector3d(
+                (corner & 1) ? source.x * 0.5 : -source.x * 0.5,
+                (corner & 2) ? source.y * 0.5 : -source.y * 0.5,
+                (corner & 4) ? source.z : 0)
+            const point = activeModel.mapPositionToScene(local)
+            minX = Math.min(minX, point.x)
+            minY = Math.min(minY, point.y)
+            minZ = Math.min(minZ, point.z)
+            maxX = Math.max(maxX, point.x)
+            maxY = Math.max(maxY, point.y)
+            maxZ = Math.max(maxZ, point.z)
+        }
+        // Quick3D can return the origin for a newly-created repeater delegate
+        // until its scene transform has propagated. Keep split-piece bounds
+        // useful during that frame instead of displaying 0 x 0 x 0.
+        if (!Number.isFinite(minX) || maxX - minX < 0.000001
+                || maxY - minY < 0.000001 || maxZ - minZ < 0.000001) {
+            return Qt.vector3d(source.x * Math.abs(activeModel.scale.x),
+                               source.y * Math.abs(activeModel.scale.y),
+                               source.z * Math.abs(activeModel.scale.z))
+        }
+        return Qt.vector3d(maxX - minX, maxY - minY, maxZ - minZ)
+    }
+
+    function selectedWorldBounds() {
+        return instanceWorldBounds(selectedInstanceIndex)
+    }
+
+    function instanceWorldBounds(index) {
+        const row = index >= 0 && index < sceneInstances.count ? sceneInstances.get(index) : null
+        const geometry = row ? geometryForKey(row.geometryKey) : null
+        if (!geometry)
+            return null
+        const source = geometry.dimensions
+        const activeModel = index >= 0 ? instanceRepeater.objectAt(index) : null
+        if (!activeModel || !geometry.loaded)
+            return null
+        let minX = Number.POSITIVE_INFINITY
+        let minY = Number.POSITIVE_INFINITY
+        let minZ = Number.POSITIVE_INFINITY
+        let maxX = Number.NEGATIVE_INFINITY
+        let maxY = Number.NEGATIVE_INFINITY
+        let maxZ = Number.NEGATIVE_INFINITY
+        for (let corner = 0; corner < 8; ++corner) {
+            const local = Qt.vector3d(
+                (corner & 1) ? source.x * 0.5 : -source.x * 0.5,
+                (corner & 2) ? source.y * 0.5 : -source.y * 0.5,
+                (corner & 4) ? source.z : 0)
+            const point = activeModel.mapPositionToScene(local)
+            minX = Math.min(minX, point.x)
+            minY = Math.min(minY, point.y)
+            minZ = Math.min(minZ, point.z)
+            maxX = Math.max(maxX, point.x)
+            maxY = Math.max(maxY, point.y)
+            maxZ = Math.max(maxZ, point.z)
+        }
+        if (!Number.isFinite(minX) || maxX - minX < 0.000001
+                || maxY - minY < 0.000001 || maxZ - minZ < 0.000001) {
+            const position = activeModel.position
+            const halfX = source.x * Math.abs(activeModel.scale.x) * 0.5
+            const halfY = source.y * Math.abs(activeModel.scale.y) * 0.5
+            const height = source.z * Math.abs(activeModel.scale.z)
+            return { minX: position.x - halfX, minY: position.y - halfY, minZ: position.z,
+                     maxX: position.x + halfX, maxY: position.y + halfY, maxZ: position.z + height }
+        }
+        return { minX: minX, minY: minY, minZ: minZ,
+                 maxX: maxX, maxY: maxY, maxZ: maxZ }
+    }
+
+    function placeSelectedOnBed() {
+        const bounds = selectedWorldBounds()
+        if (!bounds)
+            return
+        modelOffset = Qt.vector3d(modelOffset.x, modelOffset.y, modelOffset.z - bounds.minZ)
+        statusLabel.text = "Placed model on build plate at Z=0 mm"
+    }
+
+    function centerSelectedOnPlate() {
+        const bounds = selectedWorldBounds()
+        if (!bounds)
+            return
+        modelOffset = Qt.vector3d(
+            modelOffset.x - (bounds.minX + bounds.maxX) * 0.5,
+            modelOffset.y - (bounds.minY + bounds.maxY) * 0.5,
+            modelOffset.z)
+        statusLabel.text = "Centered model over build plate origin"
+    }
+
+    function syncActiveInstance() {
+        if (restoringInstanceState || selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return
+        sceneInstances.setProperty(selectedInstanceIndex, "offsetX", modelOffset.x)
+        sceneInstances.setProperty(selectedInstanceIndex, "offsetY", modelOffset.y)
+        sceneInstances.setProperty(selectedInstanceIndex, "offsetZ", modelOffset.z)
+        sceneInstances.setProperty(selectedInstanceIndex, "rotationX", modelRotation.x)
+        sceneInstances.setProperty(selectedInstanceIndex, "rotationY", modelRotation.y)
+        sceneInstances.setProperty(selectedInstanceIndex, "rotationZ", modelRotation.z)
+        sceneInstances.setProperty(selectedInstanceIndex, "scaleX", modelScale.x)
+        sceneInstances.setProperty(selectedInstanceIndex, "scaleY", modelScale.y)
+        sceneInstances.setProperty(selectedInstanceIndex, "scaleZ", modelScale.z)
+        sceneInstances.setProperty(selectedInstanceIndex, "instanceVisible", modelVisible)
+    }
+
+    function setInstanceSelected(index) {
+        if (index < 0 || index >= sceneInstances.count)
+            return
+        restoringInstanceState = true
+        selectedInstanceIndex = index
+        const item = sceneInstances.get(index)
+        modelOffset = Qt.vector3d(item.offsetX, item.offsetY, item.offsetZ)
+        modelRotation = Qt.vector3d(item.rotationX, item.rotationY, item.rotationZ)
+        modelScale = Qt.vector3d(item.scaleX, item.scaleY, item.scaleZ)
+        modelVisible = item.instanceVisible
+        modelSelected = true
+        restoringInstanceState = false
+    }
+
+    function duplicateSelectedInstance() {
+        if (!importedGeometry.loaded || selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return
+        const source = sceneInstances.get(selectedInstanceIndex)
+        const sourceBounds = selectedWorldBounds()
+        if (!sourceBounds)
+            return
+
+        // Search to the right using transformed bounds so rotated and scaled
+        // instances do not spawn on top of existing models.
+        const spacing = Math.max(sourceBounds.maxX - sourceBounds.minX, 10) + 10
+        let offsetX = spacing
+        let slotFound = false
+        for (let attempt = 0; attempt < 256 && !slotFound; ++attempt) {
+            slotFound = true
+            const candidateMinX = sourceBounds.minX + offsetX
+            const candidateMaxX = sourceBounds.maxX + offsetX
+            for (let i = 0; i < sceneInstances.count; ++i) {
+                if (i === selectedInstanceIndex || !sceneInstances.get(i).instanceVisible)
+                    continue
+                const other = instanceWorldBounds(i)
+                if (!other)
+                    continue
+                const overlapsX = candidateMinX < other.maxX && candidateMaxX > other.minX
+                const overlapsY = sourceBounds.minY < other.maxY && sourceBounds.maxY > other.minY
+                if (overlapsX && overlapsY) {
+                    slotFound = false
+                    offsetX += spacing
+                    break
+                }
+            }
+        }
+        if (!slotFound) {
+            statusLabel.text = "Could not find a clear placement for the duplicate"
+            return
+        }
+        sceneInstances.append({
+            instanceId: newSceneInstanceId(), name: `${source.name} copy`, piece: source.piece, geometryKey: source.geometryKey,
+            sourceUrl: source.sourceUrl, backendModelId: source.backendModelId,
+            offsetX: source.offsetX + offsetX, offsetY: source.offsetY, offsetZ: source.offsetZ,
+            rotationX: source.rotationX, rotationY: source.rotationY, rotationZ: source.rotationZ,
+            scaleX: source.scaleX, scaleY: source.scaleY, scaleZ: source.scaleZ,
+            instanceVisible: true
+        })
+        setInstanceSelected(sceneInstances.count - 1)
+        statusLabel.text = "Duplicated mesh instance"
+    }
+
+    function removeSelectedInstance() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return
+        const removedIndex = selectedInstanceIndex
+        const removedGeometryKey = sceneInstances.get(removedIndex).geometryKey
+        sceneInstances.remove(removedIndex)
+        let pieceStillUsed = false
+        for (let i = 0; i < sceneInstances.count; ++i) {
+            if (sceneInstances.get(i).geometryKey === removedGeometryKey) {
+                pieceStillUsed = true
+                break
+            }
+        }
+        if (!pieceStillUsed) {
+            if (removedGeometryKey !== "source")
+                destroyDerivedGeometry(removedGeometryKey)
+        }
+        if (sceneInstances.count === 0) {
+            selectedInstanceIndex = -1
+            modelSelected = false
+            modelVisible = true
+            for (const key of Object.keys(derivedGeometries))
+                destroyDerivedGeometry(key)
+            importedGeometry.clearMesh()
+            statusLabel.text = "Scene is empty"
+            return
+        }
+        setInstanceSelected(Math.min(removedIndex, sceneInstances.count - 1))
+        statusLabel.text = "Removed mesh instance"
+    }
+
+    function mirrorModel(axis) {
+        if (axis === "X")
+            modelScale = Qt.vector3d(-modelScale.x, modelScale.y, modelScale.z)
+        else if (axis === "Y")
+            modelScale = Qt.vector3d(modelScale.x, -modelScale.y, modelScale.z)
+        else if (axis === "Z")
+            modelScale = Qt.vector3d(modelScale.x, modelScale.y, -modelScale.z)
+        statusLabel.text = `Mirrored model across ${axis} axis`
+    }
+
+    function setCameraView(viewName) {
+        if (viewName === "Top")
+            cameraRig.eulerRotation = Qt.vector3d(0, 0, 0)
+        else if (viewName === "Front")
+            cameraRig.eulerRotation = Qt.vector3d(90, 0, 0)
+        else if (viewName === "Right")
+            cameraRig.eulerRotation = Qt.vector3d(0, 90, 0)
+        else
+            cameraRig.eulerRotation = Qt.vector3d(48, 0, 0)
+
+        if (importedGeometry.loaded)
+            frameImportedModel()
+        else {
+            cameraRig.position = Qt.vector3d(0, 0, 0)
+            camera.position = Qt.vector3d(0, 0, 520)
+        }
+    }
+
+    function setCameraAxis(axis, side) {
+        if (axis === "X")
+            cameraRig.eulerRotation = Qt.vector3d(0, side > 0 ? 90 : -90, 0)
+        else if (axis === "Y")
+            cameraRig.eulerRotation = Qt.vector3d(side > 0 ? -90 : 90, 0, 0)
+        else
+            cameraRig.eulerRotation = Qt.vector3d(side > 0 ? 0 : 180, 0, 0)
+
+        if (importedGeometry.loaded)
+            frameImportedModel()
+        else {
+            cameraRig.position = Qt.vector3d(0, 0, 0)
+            camera.position = Qt.vector3d(0, 0, 520)
+        }
+    }
+
+    Shortcut { sequence: "Ctrl+1"; onActivated: setCameraView("Top") }
+    Shortcut { sequence: "Ctrl+2"; onActivated: setCameraView("Front") }
+    Shortcut { sequence: "Ctrl+3"; onActivated: setCameraView("Right") }
+    Shortcut { sequence: "Ctrl+4"; onActivated: setCameraView("Iso") }
+    Shortcut {
+        sequence: "Ctrl+F"
+        context: Qt.WindowShortcut
+        onActivated: frameImportedModel()
+    }
+    Shortcut {
+        sequence: "Ctrl+D"
+        context: Qt.WindowShortcut
+        onActivated: duplicateSelectedInstance()
+    }
+    Shortcut {
+        sequence: "Delete"
+        context: Qt.WindowShortcut
+        onActivated: removeSelectedInstance()
+    }
+    Shortcut {
+        sequence: "Ctrl+H"
+        context: Qt.WindowShortcut
+        onActivated: {
+            if (importedGeometry.loaded && selectedInstanceIndex >= 0)
+                modelVisible = !modelVisible
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+R"
+        onActivated: {
+            if (!importedGeometry.loaded) return
+            modelOffset = Qt.vector3d(0, 0, 0)
+            modelRotation = Qt.vector3d(0, 0, 0)
+            modelScale = Qt.vector3d(1, 1, 1)
+            modelVisible = true
+            frameImportedModel()
+        }
+    }
+}

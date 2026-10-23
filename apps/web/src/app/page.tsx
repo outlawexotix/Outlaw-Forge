@@ -112,6 +112,28 @@ export default function WorkbenchPage() {
 
   // Active Selected Model ID
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+
+  const selectModel = (id: string, modifiers?: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
+    const additive = Boolean(modifiers?.shiftKey || modifiers?.ctrlKey || modifiers?.metaKey);
+    if (!additive) {
+      setSelectedModelId(id);
+      setSelectedModelIds([id]);
+      return;
+    }
+    const next = selectedModelIds.includes(id)
+      ? selectedModelIds.filter((selectedId) => selectedId !== id)
+      : [...selectedModelIds, id];
+    const effectiveSelection = next.length > 0 ? next : [id];
+    setSelectedModelIds(effectiveSelection);
+    setSelectedModelId(effectiveSelection.includes(id) ? id : effectiveSelection[effectiveSelection.length - 1]);
+  };
+
+  const selectAllModels = () => {
+    const ids = (activeProject?.working_models || []).map((item) => item.id);
+    setSelectedModelIds(ids);
+    if (ids.length > 0) setSelectedModelId(ids[ids.length - 1]);
+  };
 
   // Active Model from project
   const workingModels = activeProject?.working_models || [];
@@ -351,6 +373,7 @@ export default function WorkbenchPage() {
       };
     });
     setSelectedModelId((current) => (current === modelId ? null : current));
+    setSelectedModelIds((current) => current.filter((id) => id !== modelId));
     setActiveModelBuffer(null);
     setSaveStatus("saved");
   };
@@ -364,19 +387,43 @@ export default function WorkbenchPage() {
         working_models: [...prev.working_models, duplicate],
       } : prev);
       setSelectedModelId(duplicate.id);
+      setSelectedModelIds([duplicate.id]);
       setSaveStatus("saved");
     } catch (err) {
       alert(err instanceof Error ? err.message : "Could not duplicate model.");
     }
   };
 
-  const handleViewportDelete = async (modelId: string) => {
-    if (!activeProject || !confirm("Delete this model from the build plate?")) return;
+  const handleViewportDelete = async (modelIds: string | string[]) => {
+    if (!activeProject) return;
+    const ids = Array.isArray(modelIds) ? [...new Set(modelIds)] : [modelIds];
+    if (ids.length === 0) return;
+    const prompt = ids.length === 1
+      ? "Delete this model from the build plate?"
+      : `Delete ${ids.length} selected models from the build plate?`;
+    if (!confirm(prompt)) return;
     try {
-      await apiClient.deleteModel(activeProject.id, modelId);
-      handleModelDeleted(modelId);
+      const outcomes = await Promise.allSettled(
+        ids.map((modelId) => apiClient.deleteModel(activeProject.id, modelId))
+      );
+      const deletedIds = ids.filter((_, index) => outcomes[index].status === "fulfilled");
+      if (deletedIds.length === 0) {
+        const firstFailure = outcomes.find((outcome) => outcome.status === "rejected");
+        throw firstFailure?.status === "rejected" ? firstFailure.reason : new Error("Could not delete selected models.");
+      }
+      setActiveProject((prev) => prev ? {
+        ...prev,
+        working_models: prev.working_models.filter((model) => !deletedIds.includes(model.id)),
+      } : prev);
+      setSelectedModelId((current) => current && deletedIds.includes(current) ? null : current);
+      setSelectedModelIds((current) => current.filter((id) => !deletedIds.includes(id)));
+      setActiveModelBuffer(null);
+      setSaveStatus("saved");
+      if (deletedIds.length < ids.length) {
+        alert("Some selected models could not be deleted.");
+      }
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Could not delete model.");
+      alert(err instanceof Error ? err.message : "Could not delete selected models.");
     }
   };
 
@@ -395,6 +442,7 @@ export default function WorkbenchPage() {
       };
     });
     setSelectedModelId(modelId);
+    setSelectedModelIds([modelId]);
     setSaveStatus("unsaved");
   };
 
@@ -548,15 +596,18 @@ export default function WorkbenchPage() {
             </div>
           </div>
           <ViewportContainer
+            projectId={activeProject?.id || ''}
             printer={activePrinter}
             model={activeWorkingModel}
             models={workingModels}
             activeModelId={activeWorkingModel?.id || null}
+            selectedModelIds={selectedModelIds}
             modelBuffer={activeModelBuffer}
             activeTool={activeTool}
             slicePlaneOrigin={slicePlaneOrigin}
             slicePlaneNormal={slicePlaneNormal}
-            onSelectModel={(id: string) => setSelectedModelId(id)}
+            onSelectModel={selectModel}
+            onSelectAllModels={selectAllModels}
             onSetTool={setActiveTool}
             onDuplicateModel={handleViewportDuplicate}
             onDeleteModel={handleViewportDelete}
@@ -596,7 +647,7 @@ export default function WorkbenchPage() {
                 printer={activePrinter}
                 printers={printers}
                 operations={activeProject?.operations || []}
-                onSelectModel={(id) => setSelectedModelId(id)}
+                onSelectModel={(id) => selectModel(id)}
                 onPrinterChange={handlePrinterChange}
                 onOpenCreatePrinter={() => setIsCreatePrinterDialogOpen(true)}
                 onModelUpdated={handleModelUpdated}

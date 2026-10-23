@@ -1,65 +1,69 @@
-# Outlaw Forge - System Architecture & Engineering Rules
+# Outlaw Forge architecture
 
-## 1. Executive Summary
+## Product shape
 
-Outlaw Forge is a local-first desktop workbench for 3D model inspection, deterministic mesh repair and transformation, print-readiness analysis, project persistence, and printer-aware export. A Tauri 2 shell hosts a statically exported Next.js and Three.js interface and supervises a loopback-only FastAPI geometry sidecar.
+Outlaw Forge currently has two desktop-facing implementations and one shared geometry service:
 
----
+1. **Main workbench:** a Tauri 2 application hosting the statically exported Next.js and Three.js interface. The Rust shell starts and supervises a local FastAPI sidecar.
+2. **Browser development workbench:** the same Next.js interface served for development, connected to a separately started local API.
+3. **Native viewport foundation:** a separate Qt Quick 3D executable under `apps/native/`. It is experimental and is not packaged into the Tauri application.
 
-## 2. Monorepo Directory Architecture
+The main workbench remains the fuller project workflow. The native viewport has its own documented migration boundary and currently sends STL/OBJ slicing through the existing API. Native viewport features should not be described as Tauri features unless they have also been integrated into the Tauri workbench.
 
-The repository adheres to a modular multi-tier structure:
+## Repository map
 
-```
-outlaw-forge/
-├── apps/
-│   ├── web/                    # Next.js 14+ / React 18+ App Router Frontend
-│   └── api/                    # FastAPI (Python 3.11+) Backend REST Service
-├── src-tauri/                  # Tauri 2 shell, sidecar lifecycle, menus, and bundling
-├── packages/
-│   ├── ui/                     # Reusable CAD UI components & design system
-│   ├── shared/                 # Shared TypeScript interfaces, schemas & enums
-│   └── three-tools/            # 3D Math, R3F Viewport controls & shader tools
-├── data/                       # Isolated runtime storage (Gitignored)
-│   ├── uploads/                # Immutable source mesh uploads (STL, OBJ, 3MF)
-│   ├── working/                # Transformed working meshes & cached revisions
-│   ├── exports/                # Exported production artifacts
-│   └── outlaw_forge.db         # Local SQLite project database
-├── docs/                       # Specifications & Engineering Documentation
-│   ├── ARCHITECTURE.md         # Monorepo architecture & engineering principles
-│   ├── ROADMAP.md              # Implemented baseline, priorities, and deferred work
-│   ├── MESH_PIPELINE.md        # Computational geometry & unit standards
-│   ├── PRINTER_PROFILES.md     # Printer build volumes & kinematics specs
-│   └── AI_ARCHITECTURE.md      # Advisory AI interfaces & boundary rules
-├── scripts/                    # Dev orchestration & automation scripts
-└── tests/                      # Desktop acceptance, critical workflow, and smoke checks
+```text
+apps/
+├── api/          FastAPI routes, Pydantic models, SQLite persistence, geometry services
+├── web/          Next.js App Router, React workbench, Three.js / React Three Fiber viewport
+└── native/       Qt Quick 3D executable, local mesh reader, service-backed slice client
+packages/
+├── shared/       TypeScript API and viewport contracts corresponding to API models
+├── three-tools/  Web renderer loaders, geometry transforms, materials, and viewport utilities
+└── ui/           Shared web UI primitives
+src-tauri/        Tauri window, capabilities, native menus, sidecar lifecycle, package config
+data/             Ignored local database and source/working/export mesh storage
+docs/             Product, architecture, geometry, workflow, QA, and migration documentation
+scripts/          Development, packaging, and verification helpers
+tests/            Service smoke and desktop acceptance checks
 ```
 
----
+## Runtime paths
 
-## 3. Core Architectural Rules
+### Main desktop workbench
 
-### 3.1 Deterministic Spatial Units & Coordinate Space
-- **Canonical Distance Unit**: Millimeters ($mm$) across all internal representations, APIs, and persisted fields.
-- **Coordinate Systems**:
-  - **Slicer & Print Bed Space**: $Z\text{-up}$, right-handed Cartesian ($X\text{-right}, Y\text{-back}, Z\text{-up}$).
-  - **Three.js Viewport Scene**: $Y\text{-up}$, right-handed Cartesian.
-  - Transformation between Slicer Space and Viewport Space is managed via non-destructive affine rotations ($R_x(-\pi/2)$).
-- **Scale Factor**: $1.0\text{ Three.js World Unit} = 1.0\text{ mm}$ strictly.
+```text
+Tauri 2 shell
+  -> static Next.js build in apps/web/out
+  -> FastAPI sidecar on a dynamically selected 127.0.0.1 port
+  -> SQLite project data and local source/working/export files
+```
 
-### 3.2 Immutability of Source Assets
-- Uploaded original files in `data/uploads/` are **read-only and immutable**.
-- Scaling, rotation, or transformation operations write derivative working geometries to `data/working/` with full provenance logs.
-- Exported geometries are written cleanly to `data/exports/`.
+The Rust shell starts the sidecar, waits for its health response, passes its selected address to the webview, and shuts the process down with the desktop app. On Windows, Job Object supervision cleans up sidecar descendants. Browser development can use a fixed local API port instead.
 
-### 3.3 Storage Security & Input Sanitization
-- File uploads are validated via file extension, MIME type, and magic bytes.
-- Filenames are sanitized (UUID-based storage keys) to prevent path traversal (`../`).
-- Internal filesystem paths are never returned over API responses.
+### Native viewport foundation
 
-### 3.4 Decoupled Persistence
-- Persistence is implemented through an asynchronous repository pattern (`ProjectRepository`, `PrinterRepository`, `OperationRepository`) backed by SQLite (`aiosqlite`) with clean future migration paths to PostgreSQL.
+```text
+Qt Quick 3D scene in Z-up millimetres
+  -> local STL/OBJ and limited 3MF viewing
+  -> Qt Network client for project import, slice, and result-file routes
+```
 
-### 3.5 Clear User State Communication
-- Controls for deferred features are explicitly labeled **"Coming Soon"** or visually disabled.
-- Save status (**Saved** vs **Unsaved Changes**) is prominently visible in the UI header at all times.
+The native client creates a service project lazily, uploads supported source meshes, maps the world-space plane into the selected instance's source coordinates, and displays returned revisions only after both files are downloaded. It uses existing API contracts. Mesh closure is reported from the API's `is_watertight` metadata for each half. The native phase does not make an open result watertight automatically.
+
+## Coordinate and geometry boundaries
+
+- Lengths, printer dimensions, persisted transforms, and API geometry coordinates use millimetres.
+- The web workbench uses a Three.js Y-up render scene and keeps print-space calculations in the service's Z-up convention. Renderer conversion is performed at the viewport boundary.
+- The Qt viewport uses a right-handed Z-up scene, so it does not share the web renderer's Y-up scene transform.
+- Original source files are immutable. API operations write derived working models and record operation history; exports are separate artifacts.
+- Geometry calculations are deterministic. AI suggestions, if introduced, remain advisory and cannot silently edit meshes or project data.
+- Pydantic API models and shared TypeScript contracts must change together when the service contract changes.
+
+## Persistence and local ownership
+
+FastAPI repositories use SQLite through `aiosqlite`. The configured data root stores the local database, immutable originals, working revisions, and exports. Runtime mesh files, databases, and build output are not tracked by Git. The desktop API binds to loopback by default; it is not a hosted multi-user service.
+
+## Packaging boundary
+
+`scripts/desktop-build.ps1` builds the web export, optionally builds a PyInstaller sidecar, and invokes Tauri packaging when its toolchain is present. The Qt executable has its own CMake build in `apps/native/` and currently has no Tauri packaging integration. See [the desktop workflow](./skills/desktop-app-workflow.md) and [native migration plan](./NATIVE_VIEWPORT_MIGRATION.md).
