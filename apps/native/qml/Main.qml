@@ -165,6 +165,86 @@ ApplicationWindow {
         statusLabel.text = `Local repair: ${result.holesFilled} planar holes filled, ${result.weldedVertices} vertices welded, ${result.removedTriangles} degenerate triangles removed. Watertight: ${before.watertight ? "yes" : "no"} before, ${after.watertight ? "yes" : "no"} after. Boundary edges: ${before.boundaryEdges} to ${after.boundaryEdges}.`
     }
 
+    function splitSelectedComponents() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return
+        const sourceIndex = selectedInstanceIndex
+        const sourceRow = sceneInstances.get(sourceIndex)
+        const sourceGeometry = geometryForKey(sourceRow.geometryKey)
+        if (!sourceGeometry || !sourceGeometry.loaded) {
+            statusLabel.text = "The selected mesh geometry is unavailable."
+            return
+        }
+        const count = sourceGeometry.connectedComponentCount()
+        if (count < 2) {
+            statusLabel.text = "The selected mesh has one edge-connected component; no split was needed."
+            return
+        }
+
+        const outputs = []
+        for (let index = 0; index < count; ++index)
+            outputs.push(createDerivedGeometry())
+        const result = sourceGeometry.splitConnectedComponents(outputs.map(output => output.geometry))
+        if (result.error) {
+            for (const output of outputs)
+                destroyDerivedGeometry(output.key)
+            statusLabel.text = result.error
+            return
+        }
+
+        const componentName = index => `${sourceRow.name} - component ${index + 1}`
+        const scale = Qt.vector3d(sourceRow.scaleX, sourceRow.scaleY, sourceRow.scaleZ)
+        const rotation = Qt.vector3d(sourceRow.rotationX, sourceRow.rotationY, sourceRow.rotationZ)
+        const firstCorrection = sourceGeometry.instanceOffsetCorrection(outputs[0].geometry, scale, rotation)
+        sceneInstances.setProperty(sourceIndex, "geometryKey", outputs[0].key)
+        sceneInstances.setProperty(sourceIndex, "name", componentName(0))
+        sceneInstances.setProperty(sourceIndex, "piece", "derived")
+        sceneInstances.setProperty(sourceIndex, "offsetX", sourceRow.offsetX + firstCorrection.x)
+        sceneInstances.setProperty(sourceIndex, "offsetY", sourceRow.offsetY + firstCorrection.y)
+        sceneInstances.setProperty(sourceIndex, "offsetZ", sourceRow.offsetZ + firstCorrection.z)
+        for (let index = 1; index < outputs.length; ++index) {
+            const correction = sourceGeometry.instanceOffsetCorrection(outputs[index].geometry, scale, rotation)
+            sceneInstances.append({
+                instanceId: newSceneInstanceId(), name: componentName(index), piece: "derived",
+                geometryKey: outputs[index].key, sourceUrl: sourceRow.sourceUrl,
+                offsetX: sourceRow.offsetX + correction.x,
+                offsetY: sourceRow.offsetY + correction.y,
+                offsetZ: sourceRow.offsetZ + correction.z,
+                rotationX: sourceRow.rotationX, rotationY: sourceRow.rotationY, rotationZ: sourceRow.rotationZ,
+                scaleX: sourceRow.scaleX, scaleY: sourceRow.scaleY, scaleZ: sourceRow.scaleZ,
+                instanceVisible: sourceRow.instanceVisible
+            })
+        }
+        setInstanceSelected(sourceIndex)
+        refreshMeshAnalysis()
+        statusLabel.text = `Split into ${outputs.length} edge-connected components. Each component is a separate selectable local mesh.`
+    }
+
+    function simplifySelectedMesh() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return
+        const sourceIndex = selectedInstanceIndex
+        const sourceRow = sceneInstances.get(sourceIndex)
+        const sourceGeometry = geometryForKey(sourceRow.geometryKey)
+        if (!sourceGeometry || !sourceGeometry.loaded) {
+            statusLabel.text = "The selected mesh geometry is unavailable."
+            return
+        }
+        const derived = createDerivedGeometry()
+        const result = sourceGeometry.simplifyMesh(simplifyReduction.value, derived.geometry)
+        if (result.error) {
+            destroyDerivedGeometry(derived.key)
+            statusLabel.text = result.error
+            return
+        }
+        sceneInstances.setProperty(sourceIndex, "geometryKey", derived.key)
+        sceneInstances.setProperty(sourceIndex, "name", `${sourceRow.name} - simplified`)
+        sceneInstances.setProperty(sourceIndex, "piece", "derived")
+        setInstanceSelected(sourceIndex)
+        refreshMeshAnalysis()
+        statusLabel.text = `Local simplification: ${result.sourceTriangles} to ${result.triangles} triangles (${Number(result.actualReductionPercent).toFixed(1)}% reduction; ${Number(result.requestedReductionPercent).toFixed(0)}% requested). Source mesh retained as its earlier revision.`
+    }
+
     function applyPlaneSlice() {
         const point = Qt.vector3d(slicePointX.value / 100.0, slicePointY.value / 100.0, slicePointZ.value / 100.0)
         const normal = Qt.vector3d(sliceNormalX.value / 10000.0, sliceNormalY.value / 10000.0, sliceNormalZ.value / 10000.0)
@@ -694,6 +774,40 @@ ApplicationWindow {
                                 textFromValue: function(value) { return (value / 100.0).toFixed(2) }
                                 valueFromText: function(text) { return Math.max(1, Math.min(1000, Math.round(Number(text) * 100))) }
                             }
+                        }
+                        Button {
+                            text: "Split components"
+                            Layout.fillWidth: true
+                            enabled: selectedInstanceIndex >= 0
+                            onClicked: splitSelectedComponents()
+                            ToolTip.visible: hovered
+                            ToolTip.text: "Create one selectable scene item for each edge-connected mesh component."
+                            contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            background: Rectangle { color: parent.down ? "#424b43" : "#202723"; border.color: "#424b43"; radius: 3 }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label { text: "Reduce (%)"; color: "#aa9c89"; font.pixelSize: 9 }
+                            Item { Layout.fillWidth: true }
+                            SpinBox {
+                                id: simplifyReduction
+                                from: 1
+                                to: 95
+                                value: 50
+                                editable: true
+                                textFromValue: function(value) { return `${value}%` }
+                                valueFromText: function(text) { return Math.max(1, Math.min(95, parseInt(text, 10) || 1)) }
+                            }
+                        }
+                        Button {
+                            text: "Simplify mesh"
+                            Layout.fillWidth: true
+                            enabled: selectedInstanceIndex >= 0
+                            onClicked: simplifySelectedMesh()
+                            ToolTip.visible: hovered
+                            ToolTip.text: "Create a derived mesh using deterministic local vertex clustering."
+                            contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            background: Rectangle { color: parent.down ? "#424b43" : "#202723"; border.color: "#424b43"; radius: 3 }
                         }
                     }
                 }

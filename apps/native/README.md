@@ -1,6 +1,6 @@
 # Outlaw Forge Native Application
 
-The Qt Quick 3D application is a local mesh workbench. It has no geometry API, HTTP client, or service startup requirement. Mesh import, inspection, repair, auto-orient, planar cutting, and STL export run in the native process. STL, OBJ, and limited 3MF files are read from disk; source files remain unchanged. Geometry revisions remain in memory until exported. Project save and reopen are not implemented.
+The Qt Quick 3D application is a local mesh workbench. It has no geometry API, HTTP client, or service startup requirement. Mesh import, inspection, repair, auto-orient, planar cutting, connected-component splitting, deterministic vertex-clustering simplification, and STL export run in the native process. STL, OBJ, and limited 3MF files are read from disk; source files remain unchanged. Geometry revisions remain in memory until exported. Project save and reopen are not implemented.
 
 The viewport uses a right-handed Z-up scene measured in millimetres. It includes a build plate, lighting, camera controls, Top/Front/Right/Isometric views, an orientation gizmo, instance selection, hide/remove/duplicate, non-destructive transforms, and placement controls. The File, Edit, View, Window, and Settings menus contain the matching native actions.
 
@@ -10,6 +10,8 @@ Geometry tools:
 - **Repair** welds vertices within the selected tolerance, removes degenerate triangles, and fills simple planar boundary loops. Branched and non-planar openings are left open and remain visible in the analysis report.
 - **Auto Orient** scores deterministic candidate rotations from large face normals and cardinal directions, then bakes the selected orientation and places the mesh on the build plate.
 - **Cut and Separate** clips the selected mesh locally against the movable plane. When enabled, both sections become separate scene instances. Cut faces are capped when the contour is closed and can be triangulated; the status reports any remaining open boundaries.
+- **Split components** creates one selectable derived scene mesh for each edge-connected triangle component. Components are ordered by triangle count, with source order breaking ties; their placement is preserved under the selected instance transform.
+- **Simplify mesh** creates a derived mesh using deterministic vertex clustering and a bounded search budget. It currently accepts meshes up to 1,000,000 triangles. The requested reduction is a target; the achieved triangle count and reduction are reported because clustering cannot guarantee an exact target or preserve every feature.
 - **Export STL** saves the selected mesh revision as a binary STL in millimetres. The current instance translation, rotation, and scale are baked into the exported triangles; negative-scale transforms preserve face winding. The imported source file remains unchanged.
 
 ## Build

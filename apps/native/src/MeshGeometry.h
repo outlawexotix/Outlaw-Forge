@@ -33,6 +33,12 @@ public:
                                       const QVector3D &rotationDeg, const QVector3D &scale) const;
     Q_INVOKABLE void clearMesh();
     Q_INVOKABLE QVariantMap analyzeMesh() const;
+    Q_INVOKABLE int connectedComponentCount() const;
+    Q_INVOKABLE QVariantMap splitConnectedComponents(const QVariantList &outputs) const;
+    Q_INVOKABLE QVariantMap simplifyMesh(double targetReductionPercent, MeshGeometry *output) const;
+    Q_INVOKABLE QVector3D instanceOffsetCorrection(const MeshGeometry *derivedGeometry,
+                                                   const QVector3D &instanceScale,
+                                                   const QVector3D &instanceRotationDeg) const;
     Q_INVOKABLE QVariantMap repairMesh(double weldToleranceMm);
     Q_INVOKABLE QVariantMap autoOrient(double criticalAngleDeg = 65.0);
     Q_INVOKABLE QVariantMap sliceByPlane(const QVector3D &pointMm, const QVector3D &normal, bool keepPositive,

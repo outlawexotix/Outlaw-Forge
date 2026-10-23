@@ -30,6 +30,30 @@ struct Vertex {
     float normal[3];
 };
 
+struct ExactPositionKey {
+    quint32 x;
+    quint32 y;
+    quint32 z;
+    bool operator==(const ExactPositionKey &) const = default;
+};
+
+size_t qHash(const ExactPositionKey &key, size_t seed = 0) noexcept
+{
+    return qHashMulti(seed, key.x, key.y, key.z);
+}
+
+struct GridCellKey {
+    qint64 x;
+    qint64 y;
+    qint64 z;
+    bool operator==(const GridCellKey &) const = default;
+};
+
+size_t qHash(const GridCellKey &key, size_t seed = 0) noexcept
+{
+    return qHashMulti(seed, key.x, key.y, key.z);
+}
+
 float littleFloat(const uchar *bytes)
 {
     return std::bit_cast<float>(qFromLittleEndian<quint32>(bytes));
@@ -44,6 +68,135 @@ QString vertexKey(const QVector3D &point, double tolerance)
 {
     const auto q = [tolerance](float value) { return qlonglong(std::llround(double(value) / tolerance)); };
     return QStringLiteral("%1:%2:%3").arg(q(point.x())).arg(q(point.y())).arg(q(point.z()));
+}
+
+QVector<QVector<qsizetype>> connectedTriangleGroups(const QVector<QVector3D> &points, double tolerance)
+{
+    const qsizetype triangleCount = points.size() / 3;
+    QVector<qsizetype> parents(triangleCount);
+    for (qsizetype i = 0; i < triangleCount; ++i)
+        parents[i] = i;
+
+    const auto root = [&parents](qsizetype index) {
+        qsizetype current = index;
+        while (parents[current] != current) {
+            parents[current] = parents[parents[current]];
+            current = parents[current];
+        }
+        return current;
+    };
+    const auto join = [&parents, &root](qsizetype left, qsizetype right) {
+        const qsizetype leftRoot = root(left);
+        const qsizetype rightRoot = root(right);
+        if (leftRoot != rightRoot)
+            parents[std::max(leftRoot, rightRoot)] = std::min(leftRoot, rightRoot);
+    };
+
+    QHash<QString, qsizetype> firstTriangleByEdge;
+    firstTriangleByEdge.reserve(triangleCount * 2);
+    for (qsizetype triangle = 0; triangle < triangleCount; ++triangle) {
+        const qsizetype offset = triangle * 3;
+        for (int edge = 0; edge < 3; ++edge) {
+            QString first = vertexKey(points[offset + edge], tolerance);
+            QString second = vertexKey(points[offset + (edge + 1) % 3], tolerance);
+            if (second < first)
+                std::swap(first, second);
+            const QString edgeKey = first + QLatin1Char('|') + second;
+            const auto it = firstTriangleByEdge.constFind(edgeKey);
+            if (it == firstTriangleByEdge.cend())
+                firstTriangleByEdge.insert(edgeKey, triangle);
+            else
+                join(triangle, it.value());
+        }
+    }
+
+    QHash<qsizetype, qsizetype> groupIndexByRoot;
+    QVector<QVector<qsizetype>> groups;
+    QVector<qsizetype> firstTriangles;
+    for (qsizetype triangle = 0; triangle < triangleCount; ++triangle) {
+        const qsizetype triangleRoot = root(triangle);
+        auto it = groupIndexByRoot.constFind(triangleRoot);
+        if (it == groupIndexByRoot.cend()) {
+            const qsizetype groupIndex = groups.size();
+            groupIndexByRoot.insert(triangleRoot, groupIndex);
+            groups.append(QVector<qsizetype>{triangle});
+            firstTriangles.append(triangle);
+        } else {
+            groups[it.value()].append(triangle);
+        }
+    }
+
+    QVector<qsizetype> order(groups.size());
+    for (qsizetype i = 0; i < order.size(); ++i)
+        order[i] = i;
+    std::sort(order.begin(), order.end(), [&groups, &firstTriangles](qsizetype left, qsizetype right) {
+        if (groups[left].size() != groups[right].size())
+            return groups[left].size() > groups[right].size();
+        return firstTriangles[left] < firstTriangles[right];
+    });
+    QVector<QVector<qsizetype>> sortedGroups;
+    sortedGroups.reserve(groups.size());
+    for (qsizetype index : order)
+        sortedGroups.append(std::move(groups[index]));
+    return sortedGroups;
+}
+
+QVector<QVector3D> clusteredCandidate(const QVector<QVector3D> &uniquePoints,
+                                      const QVector<qsizetype> &pointIndices,
+                                      const QVector3D &minimum, double cellSize)
+{
+    struct Cell {
+        QVector3D sum;
+        int count = 0;
+    };
+    const auto keyFor = [cellSize, &minimum](const QVector3D &point) {
+        const auto cell = [cellSize](float value, float origin) {
+            return qlonglong(std::floor((double(value) - origin) / cellSize));
+        };
+        return GridCellKey{cell(point.x(), minimum.x()), cell(point.y(), minimum.y()),
+                           cell(point.z(), minimum.z())};
+    };
+
+    QVector<qsizetype> representativeIndexByPoint;
+    representativeIndexByPoint.reserve(uniquePoints.size());
+    QHash<GridCellKey, qsizetype> cellIndices;
+    cellIndices.reserve(uniquePoints.size());
+    QVector<Cell> cells;
+    cells.reserve(uniquePoints.size());
+    for (const QVector3D &point : uniquePoints) {
+        const GridCellKey key = keyFor(point);
+        auto it = cellIndices.constFind(key);
+        qsizetype cellIndex;
+        if (it == cellIndices.cend()) {
+            cellIndex = cells.size();
+            cellIndices.insert(key, cellIndex);
+            cells.append(Cell{});
+        } else {
+            cellIndex = it.value();
+        }
+        representativeIndexByPoint.append(cellIndex);
+        Cell &cell = cells[cellIndex];
+        cell.sum += point;
+        ++cell.count;
+    }
+    QVector<QVector3D> representatives;
+    representatives.reserve(cells.size());
+    for (const Cell &cell : cells)
+        representatives.append(cell.sum / float(cell.count));
+
+    QVector<QVector3D> result;
+    result.reserve(pointIndices.size());
+    for (qsizetype i = 0; i + 2 < pointIndices.size(); i += 3) {
+        const QVector3D a = representatives[representativeIndexByPoint[pointIndices[i]]];
+        const QVector3D b = representatives[representativeIndexByPoint[pointIndices[i + 1]]];
+        const QVector3D c = representatives[representativeIndexByPoint[pointIndices[i + 2]]];
+        if (QVector3D::crossProduct(b - a, c - a).lengthSquared() <= 1.0e-16f)
+            continue;
+        result.append(a);
+        result.append(b);
+        result.append(c);
+    }
+    return result;
 }
 
 bool triangulateCapLoops(const QVector<QVector<QVector3D>> &loops, const QVector3D &planeNormal,
@@ -716,6 +869,162 @@ QVariantMap MeshGeometry::analyzeMesh() const
     if (!m_loaded)
         return {};
     return meshMetrics(m_trianglePoints, 0.00001);
+}
+
+int MeshGeometry::connectedComponentCount() const
+{
+    if (!m_loaded)
+        return 0;
+    return int(connectedTriangleGroups(m_trianglePoints, 0.00001).size());
+}
+
+QVariantMap MeshGeometry::splitConnectedComponents(const QVariantList &outputs) const
+{
+    if (!m_loaded || m_trianglePoints.isEmpty())
+        return {{QStringLiteral("error"), QStringLiteral("Load a mesh before splitting components.")}};
+
+    const QVector<QVector<qsizetype>> groups = connectedTriangleGroups(m_trianglePoints, 0.00001);
+    if (outputs.size() != groups.size())
+        return {{QStringLiteral("error"), QStringLiteral("The output geometry count does not match the mesh component count.")}};
+
+    QVector<MeshGeometry *> geometries;
+    geometries.reserve(outputs.size());
+    QSet<MeshGeometry *> uniqueOutputs;
+    for (const QVariant &value : outputs) {
+        auto *geometry = qobject_cast<MeshGeometry *>(qvariant_cast<QObject *>(value));
+        if (!geometry || geometry == this || uniqueOutputs.contains(geometry))
+            return {{QStringLiteral("error"), QStringLiteral("Each component needs a unique, separate output geometry.")}};
+        uniqueOutputs.insert(geometry);
+        geometries.append(geometry);
+    }
+
+    QVariantList parts;
+    parts.reserve(groups.size());
+    for (qsizetype index = 0; index < groups.size(); ++index) {
+        QVector<QVector3D> points;
+        points.reserve(groups[index].size() * 3);
+        for (qsizetype triangle : groups[index]) {
+            const qsizetype offset = triangle * 3;
+            points.append(m_trianglePoints[offset]);
+            points.append(m_trianglePoints[offset + 1]);
+            points.append(m_trianglePoints[offset + 2]);
+        }
+        MeshGeometry *output = geometries[index];
+        if (!output->setTrianglePoints(points, m_fileName, QStringLiteral("separated component")))
+            return {{QStringLiteral("error"), QStringLiteral("Could not create the separated component geometry.")}};
+        parts.append(QVariantMap{{QStringLiteral("componentIndex"), index},
+                                 {QStringLiteral("triangles"), groups[index].size()},
+                                 {QStringLiteral("revisionId"), output->revisionId()}});
+    }
+    return {{QStringLiteral("components"), groups.size()}, {QStringLiteral("parts"), parts}};
+}
+
+QVariantMap MeshGeometry::simplifyMesh(double targetReductionPercent, MeshGeometry *output) const
+{
+    if (!m_loaded || m_trianglePoints.isEmpty())
+        return {{QStringLiteral("error"), QStringLiteral("Load a mesh before simplifying it.")}};
+    if (!output || output == this)
+        return {{QStringLiteral("error"), QStringLiteral("Simplification needs a separate output geometry.")}};
+    if (!std::isfinite(targetReductionPercent) || targetReductionPercent < 1.0 || targetReductionPercent > 95.0)
+        return {{QStringLiteral("error"), QStringLiteral("Target reduction must be between 1 and 95 percent.")}};
+    constexpr qsizetype maximumSimplificationTriangles = 1000000;
+    if (triangleCount() > maximumSimplificationTriangles)
+        return {{QStringLiteral("error"), QStringLiteral("Local simplification supports meshes up to 1,000,000 triangles to stay within the native memory budget.")}};
+
+    QVector3D minimum = m_trianglePoints.front();
+    QVector3D maximum = minimum;
+    for (const QVector3D &point : m_trianglePoints) {
+        minimum.setX(std::min(minimum.x(), point.x()));
+        minimum.setY(std::min(minimum.y(), point.y()));
+        minimum.setZ(std::min(minimum.z(), point.z()));
+        maximum.setX(std::max(maximum.x(), point.x()));
+        maximum.setY(std::max(maximum.y(), point.y()));
+        maximum.setZ(std::max(maximum.z(), point.z()));
+    }
+
+    const qsizetype sourceTriangles = triangleCount();
+    const qsizetype targetTriangles = std::max<qsizetype>(1, qRound64(sourceTriangles * (1.0 - targetReductionPercent / 100.0)));
+    QVector<QVector3D> best = m_trianglePoints;
+    qsizetype bestDistance = std::abs(sourceTriangles - targetTriangles);
+    const QVector3D dimensions = maximum - minimum;
+    const double extent = std::max({double(dimensions.x()), double(dimensions.y()), double(dimensions.z()), 1.0e-5});
+    QVector<QVector3D> uniquePoints;
+    uniquePoints.reserve(m_trianglePoints.size() / 3);
+    QVector<qsizetype> pointIndices;
+    pointIndices.reserve(m_trianglePoints.size());
+    QHash<ExactPositionKey, qsizetype> uniqueIndexByPosition;
+    uniqueIndexByPosition.reserve(m_trianglePoints.size() / 6);
+    for (const QVector3D &point : m_trianglePoints) {
+        const ExactPositionKey key{std::bit_cast<quint32>(point.x()),
+                                   std::bit_cast<quint32>(point.y()),
+                                   std::bit_cast<quint32>(point.z())};
+        auto it = uniqueIndexByPosition.constFind(key);
+        qsizetype index;
+        if (it == uniqueIndexByPosition.cend()) {
+            index = uniquePoints.size();
+            uniqueIndexByPosition.insert(key, index);
+            uniquePoints.append(point);
+        } else {
+            index = it.value();
+        }
+        pointIndices.append(index);
+    }
+    double low = extent * 1.0e-8;
+    double high = extent * 2.0;
+    // Bound full-mesh passes so this local operation remains responsive for
+    // large files. Vertex clustering is deterministic for a fixed cell size;
+    // keep the nearest candidate found because the target is not a topology
+    // guarantee.
+    constexpr qsizetype maximumCandidateTriangleVisits = 2000000;
+    const int searchIterations = int(std::max<qsizetype>(1, std::min<qsizetype>(14,
+        maximumCandidateTriangleVisits / sourceTriangles)));
+    for (int iteration = 0; iteration < searchIterations; ++iteration) {
+        const double cellSize = (low + high) * 0.5;
+        QVector<QVector3D> candidate = clusteredCandidate(uniquePoints, pointIndices, minimum, cellSize);
+        const qsizetype candidateTriangles = candidate.size() / 3;
+        const qsizetype distance = std::abs(candidateTriangles - targetTriangles);
+        if (!candidate.isEmpty() && (distance < bestDistance
+            || (distance == bestDistance && candidateTriangles > best.size() / 3))) {
+            bestDistance = distance;
+            best = std::move(candidate);
+        }
+        if (candidateTriangles > targetTriangles)
+            low = cellSize;
+        else
+            high = cellSize;
+    }
+
+    if (!output->setTrianglePoints(best, m_fileName, QStringLiteral("simplified mesh")))
+        return {{QStringLiteral("error"), QStringLiteral("Could not create the simplified mesh geometry.")}};
+    const qsizetype resultTriangles = best.size() / 3;
+    const double actualReduction = sourceTriangles == 0 ? 0.0
+        : (double(sourceTriangles - resultTriangles) * 100.0 / double(sourceTriangles));
+    QVariantMap result = meshMetrics(best, 0.00001);
+    result.insert(QStringLiteral("sourceTriangles"), sourceTriangles);
+    result.insert(QStringLiteral("triangles"), resultTriangles);
+    result.insert(QStringLiteral("originalTriangles"), sourceTriangles);
+    result.insert(QStringLiteral("resultTriangles"), resultTriangles);
+    result.insert(QStringLiteral("requestedReductionPercent"), targetReductionPercent);
+    result.insert(QStringLiteral("actualReductionPercent"), actualReduction);
+    result.insert(QStringLiteral("searchIterations"), searchIterations);
+    result.insert(QStringLiteral("revisionId"), output->revisionId());
+    return result;
+}
+
+QVector3D MeshGeometry::instanceOffsetCorrection(const MeshGeometry *derivedGeometry,
+                                                  const QVector3D &instanceScale,
+                                                  const QVector3D &instanceRotationDeg) const
+{
+    if (!m_loaded || !derivedGeometry || !derivedGeometry->m_loaded
+        || !finite(instanceScale) || !finite(instanceRotationDeg))
+        return {};
+    const QVector3D sourceOrigin(m_center.x(), m_center.y(), m_center.z() - m_dimensions.z() * 0.5f);
+    const QVector3D derivedOrigin(derivedGeometry->m_center.x(), derivedGeometry->m_center.y(),
+                                  derivedGeometry->m_center.z() - derivedGeometry->m_dimensions.z() * 0.5f);
+    const QVector3D originDelta = derivedOrigin - sourceOrigin;
+    const QVector3D scaledDelta(originDelta.x() * instanceScale.x(), originDelta.y() * instanceScale.y(),
+                                originDelta.z() * instanceScale.z());
+    return -originDelta + QQuaternion::fromEulerAngles(instanceRotationDeg).rotatedVector(scaledDelta);
 }
 
 QVariantMap MeshGeometry::autoOrient(double criticalAngleDeg)
