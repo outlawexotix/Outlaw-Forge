@@ -72,7 +72,7 @@ cmake --build build/native --config Release
 ./build/native/outlaw-forge-native.exe
 ```
 
-It opens STL/OBJ and limited 3MF locally. Service-backed slicing currently supports STL/OBJ and requires FastAPI. Set `OUTLAW_FORGE_API_URL` to the API origin when it is not the default `http://127.0.0.1:8000`. Read [the native application guide](../apps/native/README.md) and [migration boundary](./NATIVE_VIEWPORT_MIGRATION.md) for details.
+The experimental Qt app opens supported STL/OBJ and limited 3MF files locally. Import, repair, auto-orient, planar cut, analysis, and STL export run in the native process; it has no API URL setting or FastAPI dependency. Read [the native application guide](../apps/native/README.md) and [migration boundary](./NATIVE_VIEWPORT_MIGRATION.md) for details. The separate Tauri workbench continues to use its supervised FastAPI sidecar.
 
 ## Build the Tauri package
 

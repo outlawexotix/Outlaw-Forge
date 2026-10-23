@@ -10,9 +10,9 @@ The software focuses on deterministic mesh preparation and printer-aware checks.
 | --- | --- | --- |
 | Tauri desktop workbench | Main desktop workflow implemented; installer and release checks remain | Project and printer-profile management, mesh preparation, print-readiness checks, viewport inspection, and export through a local API sidecar |
 | Browser workbench | Development workflow implemented | Runs the same Next.js UI and connects to the local FastAPI service |
-| Qt native viewport | Separate experimental application | Imports STL/OBJ and limited 3MF, displays and transforms scene instances, provides inspection and local repair, and routes STL/OBJ planar cuts through the geometry service |
+| Qt native viewport | Separate experimental, local-only application | Imports STL/OBJ and limited 3MF, displays and transforms scene instances, provides local inspection, repair, auto-orient, planar cut, component splitting, simplification, and STL export without an API dependency |
 
-The Qt application is not part of the Tauri package and does not replace the main workbench. Its service-backed slice command requires a reachable FastAPI service. It reports the service's watertight result for each half; requesting capped faces does not guarantee that every result is watertight. See [Native viewport migration](docs/NATIVE_VIEWPORT_MIGRATION.md).
+The Qt application is not part of the Tauri package and does not replace the main workbench. It runs mesh operations inside the experimental app and does not start, call, or require FastAPI. The Tauri workbench keeps its existing FastAPI sidecar. See [Native viewport migration](docs/NATIVE_VIEWPORT_MIGRATION.md).
 
 ## Main workbench capabilities
 
@@ -41,10 +41,10 @@ Main Tauri desktop
 
 Separate native viewport foundation
 └── Qt Quick 3D application with Z-up, millimetre scene coordinates
-    └── Qt Network client for existing project import, slice, and file routes
+    └── In-process mesh import, repair, cut, split, simplify, and STL export
 ```
 
-The web viewport uses its renderer coordinate conversion at the scene boundary. The native viewport keeps a right-handed Z-up scene. Both use millimetres for model and printer dimensions. The local API remains the authority for persisted project operations; the Qt slice command reuses its existing API contracts.
+The web viewport uses its renderer coordinate conversion at the scene boundary. The native viewport keeps a right-handed Z-up scene. Both use millimetres for model and printer dimensions. The local API remains the authority for persisted project operations in the Tauri workbench. The experimental Qt app performs geometry commands locally and does not use those API contracts.
 
 ## Repository layout
 
@@ -96,7 +96,7 @@ npm run dev:all
 
 Open [http://localhost:3000](http://localhost:3000). The default API documentation URL is [http://127.0.0.1:8000/api/v1/docs](http://127.0.0.1:8000/api/v1/docs).
 
-To configure and build the separate Qt application, see [apps/native/README.md](apps/native/README.md). Service-backed native slicing defaults to `http://127.0.0.1:8000`; set `OUTLAW_FORGE_API_URL` to a different API origin when needed.
+To configure and build the separate local-only Qt application, see [apps/native/README.md](apps/native/README.md). It requires no API URL or running FastAPI service.
 
 ## Build and verify
 

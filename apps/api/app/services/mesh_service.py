@@ -557,29 +557,15 @@ class MeshService:
                 plane_origin=origin,
                 cap=cap_faces,
             )
-        except Exception:
-            top_slice = trimesh.intersections.slice_mesh_plane(
-                mesh=mesh,
-                plane_normal=normal,
-                plane_origin=origin,
-                cap=False,
-            )
-
-        # Slice negative half (below cut plane)
-        try:
             bottom_slice = trimesh.intersections.slice_mesh_plane(
                 mesh=mesh,
                 plane_normal=-normal,
                 plane_origin=origin,
                 cap=cap_faces,
             )
-        except Exception:
-            bottom_slice = trimesh.intersections.slice_mesh_plane(
-                mesh=mesh,
-                plane_normal=-normal,
-                plane_origin=origin,
-                cap=False,
-            )
+        except Exception as exc:
+            action = "cap" if cap_faces else "slice"
+            raise MeshProcessingError(f"Failed to {action} mesh along the cut plane: {exc}") from exc
 
         if top_slice is None or len(top_slice.faces) == 0:
             raise MeshProcessingError("Cut plane does not intersect mesh: top slice is empty.")

@@ -16,23 +16,23 @@ See the [main README](../README.md) and [QA guide](./QA_ACCEPTANCE.md) for curre
 
 ## Native viewport foundation
 
-The Qt Quick 3D application in `apps/native/` is a separate experimental executable. It currently provides a Z-up millimetre scene; STL/OBJ and limited 3MF viewing; scene selection, transforms, display and inspection controls; local mesh analysis and fallback repair; and service-backed planar slicing, auto-orientation, and repair for registered STL and OBJ. Slicing uses the existing FastAPI project/import/slice/file routes and reports watertightness for each returned half. Auto-orientation and repair use existing project operation and file routes, keep the working-model ID, download derived geometry before updating scene instances, and support GET-only recovery retry when a persisted result download fails. Repair reports measured watertightness without guaranteeing closure.
+The Qt Quick 3D application in `apps/native/` is a separate experimental executable and is local-only. It has no FastAPI, HTTP, cloud, or printer-service dependency. It currently provides a Z-up millimetre scene; STL/OBJ and limited 3MF viewing; scene selection, transforms, display and inspection controls; local mesh analysis, repair, auto-orientation, planar cutting, connected-component splitting, and deterministic vertex-clustering simplification; and binary STL export with instance transforms baked into the derived output. Imported source files remain unchanged. Successful operations create in-memory geometry revisions that can be inspected and exported.
 
-This executable is not yet included in the Tauri package. Its current operation boundary, API dependency, format limits, and remaining migration work are listed in [Native viewport migration](./NATIVE_VIEWPORT_MIGRATION.md).
+This executable is not included in the Tauri package and does not share the Tauri workbench's FastAPI sidecar. Its operation boundary, format limits, local-only roadmap, and remaining work are listed in [Native viewport migration](./NATIVE_VIEWPORT_MIGRATION.md).
 
 ## Current engineering priorities
 
 1. Maintain the React 19, Next.js, and React Three Fiber dependency line with clean production builds and dependency audits.
 2. Add browser-level interaction coverage for multi-selection, camera persistence, display state, and print-readiness workflows.
-3. Exercise native slice, auto-orient, and repair commands against a running local API with representative STL and OBJ assets, including open/non-manifold results, transformed/shared instances, and persisted-result download recovery.
-4. Define project and revision persistence for the Qt app before adding native project save/reopen flows.
-5. Continue native command migration one operation at a time, preserving API contracts and source immutability.
+3. Evaluate offline geometry kernels, licenses, and Windows packaging feasibility before selecting a local boolean implementation.
+4. Add bed-aware arrangement and versioned local project save/reopen to the Qt app, preserving geometry, transforms, visibility, and source provenance.
+5. Keep new Qt geometry commands deterministic and entirely in-process; the experimental app will not acquire an API or service dependency.
 6. Produce repeatable signed Windows installer artifacts and validate first launch and file associations on a clean machine.
 
 ## Deferred capabilities
 
 - Integrating the Qt viewport into the Tauri application or making it the default desktop renderer.
-- Native persistence and project reopening for the Qt application.
+- Native project persistence and reopening for the Qt application.
 - Direct G-code generation, toolpath editing, and slicer-engine integration.
 - Automatic support generation and toolpath optimization.
 - Signed automatic update distribution and a public installer release process.

@@ -57,6 +57,7 @@ hidden_imports = [
     "trimesh.exchange.obj",
     "trimesh.exchange.threemf",
     "trimesh.exchange.gltf",
+    "rtree",
     "manifold3d",
     "numpy",
     "scipy",
@@ -79,7 +80,7 @@ hidden_imports = [
 ]
 
 # Additional dynamically discovered submodules
-for mod in ["uvicorn", "trimesh", "fastapi", "pydantic", "shapely"]:
+for mod in ["uvicorn", "trimesh", "rtree", "fastapi", "pydantic", "shapely"]:
     try:
         hidden_imports.extend(collect_submodules(mod))
     except Exception:

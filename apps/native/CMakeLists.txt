@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 6.6 REQUIRED COMPONENTS Quick Quick3D QuickControls2 CorePrivate Network)
+find_package(Qt6 6.6 REQUIRED COMPONENTS Quick Quick3D QuickControls2 CorePrivate)
 
 qt_standard_project_setup(REQUIRES 6.6)
 
@@ -17,10 +17,6 @@ qt_add_executable(outlaw-forge-native
     resources/icons.qrc
     src/MeshGeometry.h
     src/MeshGeometry.cpp
-    src/SlicePlaneMapper.h
-    src/SlicePlaneMapper.cpp
-    src/GeometryCommandClient.h
-    src/GeometryCommandClient.cpp
     src/third_party/mapbox/earcut.hpp
 )
 
@@ -44,7 +40,6 @@ target_link_libraries(outlaw-forge-native PRIVATE
     Qt6::Quick3D
     Qt6::QuickControls2
     Qt6::CorePrivate
-    Qt6::Network
 )
 
 target_include_directories(outlaw-forge-native PRIVATE src/third_party)
@@ -90,25 +85,6 @@ if(BUILD_TESTING)
     )
     set_tests_properties(native-slice-plane-tests PROPERTIES TIMEOUT 30)
 
-    qt_add_executable(native-geometry-command-tests
-        tests/GeometryCommandClientTests.cpp
-        src/SlicePlaneMapper.h
-        src/SlicePlaneMapper.cpp
-        src/GeometryCommandClient.h
-        src/GeometryCommandClient.cpp
-    )
-    set_property(TARGET native-geometry-command-tests PROPERTY AUTOMOC_COMPILER_PREDEFINES OFF)
-    target_link_libraries(native-geometry-command-tests PRIVATE
-        Qt6::Quick
-        Qt6::Network
-        Qt6::Test
-    )
-    add_test(NAME native-geometry-command-tests
-        COMMAND ${CMAKE_COMMAND} -E env
-            "PATH=$<TARGET_FILE_DIR:Qt6::Test>;$ENV{PATH}"
-            $<TARGET_FILE:native-geometry-command-tests>
-    )
-    set_tests_properties(native-geometry-command-tests PROPERTIES TIMEOUT 30)
 endif()
 
 if(WIN32)
