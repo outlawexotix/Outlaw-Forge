@@ -185,7 +185,7 @@ Document project folder contents, Save/Open behavior, current-state scope, schem
 **Files:**
 - Verification only: native CMake build and tests, Windows Qt application.
 
-- [ ] **Step 1: Run focused project-store and mesh tests.**
+- [x] **Step 1: Run focused project-store and mesh tests.**
 
 Run: `cmake --build apps/native/build-mingw2 --target native-project-store-tests native-mesh-slice-tests native-slice-plane-tests outlaw-forge-native --parallel 4`
 Run: `ctest --test-dir apps/native/build-mingw2 --output-on-failure`
@@ -195,6 +195,8 @@ Expected: all native test targets pass and the application builds.
 
 Save a scene containing an imported model and a derived mesh, close and reopen the folder, compare scene and transform state, rename or move the original imported file and reopen again, then corrupt a copied test asset and verify load fails without replacing the current scene.
 
-- [ ] **Step 3: Run `git diff --check` and inspect the final diff for accidental API/service coupling or source-file mutation.**
+- [x] **Step 3: Run `git diff --check` and inspect the final diff for accidental API/service coupling or source-file mutation.**
 
 - [ ] **Step 4: Commit only after focused tests, full native tests, build, and the manual workflow pass; report any unavailable verification plainly.**
+
+**Verification note:** Native build and all three CTest targets pass, `git diff --check` is clean, and the Windows executable launches and responds. The interactive save/reopen scenario remains unverified because the required native desktop provider timed out on `sky.list_apps()` three times, including fresh sessions. Do not treat the build launch or C++ store round-trip tests as proof of the full QML workflow.
