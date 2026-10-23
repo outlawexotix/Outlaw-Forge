@@ -162,23 +162,23 @@ The scenario must include two instances sharing a geometry revision, different s
 - `window.markProjectDirty()` marks only persisted scene changes.
 - A single pending action state handles Open Project, scene-replacing mesh import, and window close with Save, Discard, and Cancel choices.
 
-- [ ] **Step 1: Identify every persisted-scene mutation in QML.**
+- [x] **Step 1: Identify every persisted-scene mutation in QML.**
 
 Cover import, geometry commands, duplicate, remove, clear, visibility changes, and transform handlers. Do not mark selection, camera, measurement, or viewport display changes dirty.
 
-- [ ] **Step 2: Write the dirty-state transitions before implementation.**
+- [x] **Step 2: Write the dirty-state transitions before implementation.**
 
 Manually verify a clean scene closes or opens without a prompt; a dirty scene prompts; Save proceeds only after a successful project save; Discard proceeds; Cancel preserves the current window/scene; failed Save keeps the prompt and dirty state.
 
-- [ ] **Step 3: Implement the shared pending-action prompt.**
+- [x] **Step 3: Implement the shared pending-action prompt.**
 
 Route Open Project, an import that replaces current scene content, and window close through Save/Discard/Cancel. The import guard prevents the existing import behavior from replacing dirty source geometry without notice. Cancel clears the pending action and performs no scene replacement. A failed save retains the pending action and current scene.
 
-- [ ] **Step 4: Update native docs and acceptance checks.**
+- [x] **Step 4: Update native docs and acceptance checks.**
 
 Document project folder contents, Save/Open behavior, current-state scope, schema versioning, content-addressed assets, local-only boundary, and current exclusions (camera/display state and durable history). Add the persistence round-trip and corrupt-project scenarios to `docs/QA_ACCEPTANCE.md`.
 
-- [ ] **Step 5: Commit dirty-state protection and docs.**
+- [x] **Step 5: Commit dirty-state protection and docs.**
 
 ### Task 6: Verify the native persistence phase
 

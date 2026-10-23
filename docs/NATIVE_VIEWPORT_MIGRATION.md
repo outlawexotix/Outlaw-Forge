@@ -18,7 +18,7 @@ Geometry commands operate on the selected in-memory `MeshGeometry`:
 4. **Split components** groups triangles by shared undirected edges and creates separate selectable in-memory geometry for each group. Vertex-only contact does not merge components; output order is stable and placement is preserved under existing transforms.
 5. **Simplify** uses deterministic vertex clustering with a bounded candidate search to create a derived mesh for inputs up to 1,000,000 triangles. It reports requested and actual reduction; it does not promise feature preservation or an exact triangle target.
 
-Source files remain unchanged on disk. The current UI keeps derived results in memory and can export the selected geometry as binary STL with instance transforms baked in. It does not write persistent working revisions or maintain durable operation history. This experimental target has no FastAPI, HTTP, cloud, or printer-service dependency. The separate Tauri workbench continues to use its existing FastAPI geometry sidecar.
+Source files remain unchanged on disk. Save Project and Open Project persist the current scene in a local `.oforge` project folder containing a versioned `project.json` manifest and immutable content-addressed STL snapshots in `meshes/`. The project preserves ordered instances, transforms, visibility, selection, source-path provenance, and each used geometry revision, so the original source path is not required to reopen it. Loading validates and stages every mesh before replacing the current scene. Save As creates the project folder; Save atomically replaces the manifest after assets are available. Unsaved changes prompt before Open Project, a replacement import, or window close. Camera/display state and durable operation history are not persisted. The experimental target has no FastAPI, HTTP, cloud, or printer-service dependency. The separate Tauri workbench continues to use its existing FastAPI geometry sidecar.
 
 ## Native build and checks
 
@@ -38,5 +38,5 @@ Geometry, cut-plane mapping, and UI lifecycle checks should be extended with eac
 - Repair fills simple planar boundary loops only. It does not invent geometry for non-planar holes or resolve arbitrary non-manifold intersections.
 - Auto-orient uses a deterministic local heuristic; it is not a guarantee of minimal supports or printability.
 - Cut caps are generated only for valid closed contours. Pre-existing open source surfaces can leave the resulting sections open; the mesh analysis reports those boundaries.
-- Scene state and all derived geometry are in memory. Versioned project save/reopen and durable operation provenance remain future work; binary STL export is implemented.
+- Version-1 project folders save current scene state and used geometry snapshots. They do not preserve camera/display state, undo history, or durable operation provenance. Binary STL export remains available independently.
 - The Qt application is not packaged into the Tauri app. Tauri keeps its API-backed sidecar architecture.

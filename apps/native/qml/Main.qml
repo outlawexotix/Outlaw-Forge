@@ -394,6 +394,7 @@ ApplicationWindow {
         }
         refreshMeshAnalysis()
         statusLabel.text = `Local auto-orient complete: evaluated ${result.candidateCount} build orientations, overhang area ${Number(result.overhangAreaCm2).toFixed(2)} cm2, model placed at Z=0 mm.`
+        markProjectDirty()
     }
 
     function repairSelectedMesh() {
@@ -409,6 +410,7 @@ ApplicationWindow {
         refreshMeshAnalysis()
         const after = meshAnalysis
         statusLabel.text = `Local repair: ${result.holesFilled} planar holes filled, ${result.weldedVertices} vertices welded, ${result.removedTriangles} degenerate triangles removed. Watertight: ${before.watertight ? "yes" : "no"} before, ${after.watertight ? "yes" : "no"} after. Boundary edges: ${before.boundaryEdges} to ${after.boundaryEdges}.`
+        markProjectDirty()
     }
 
     function splitSelectedComponents() {
@@ -2346,6 +2348,7 @@ ApplicationWindow {
                             || name.includes("*") || name.includes("?") || name.includes("\"")
                             || name.includes("<") || name.includes(">") || name.includes("|")) {
                         statusLabel.text = "Choose a project name without Windows filename characters."
+                        Qt.callLater(projectNameDialog.open)
                         return
                     }
                     const selectedParentUrl = projectParentDialog.selectedFolder.toString()
