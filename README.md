@@ -1,3 +1,5 @@
+![Outlaw Forge repository banner](docs/assets/outlaw-forge-github-banner.jpg)
+
 # Outlaw Forge
 
 Outlaw Forge is a local-first workbench for preparing 3D mesh models for printing. The main desktop application uses a Tauri 2 shell, a Next.js and Three.js workbench, and a locally supervised FastAPI geometry service. An independent Qt Quick 3D application is also being developed as a native viewport foundation.
