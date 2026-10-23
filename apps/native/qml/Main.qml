@@ -23,10 +23,16 @@ ApplicationWindow {
     property vector3d modelScale: Qt.vector3d(1, 1, 1)
     property int selectedInstanceIndex: -1
     property var derivedGeometries: ({})
+    property string projectDirectory: ""
+    property bool projectDirty: false
     property int nextGeometryId: 1
     property int nextSceneInstanceId: 1
     property string pendingImportUrl: ""
     property bool restoringInstanceState: false
+    property bool restoringProjectGeometry: false
+    property string pendingProjectParent: ""
+    property string pendingProjectAction: ""
+    property url pendingProjectImportUrl
     property bool wireframeMode: false
     property bool boundsVisible: false
     property bool normalsVisible: false
@@ -76,6 +82,35 @@ ApplicationWindow {
             removeSelectedInstance()
         }
         statusLabel.text = "Scene cleared"
+        markProjectDirty()
+    }
+
+    function markProjectDirty() {
+        if (!restoringProjectGeometry)
+            projectDirty = true
+    }
+
+    function requestProjectAction(action, importUrl) {
+        pendingProjectAction = action
+        pendingProjectImportUrl = importUrl || ""
+        if (projectDirty) {
+            unsavedProjectDialog.open()
+            return
+        }
+        continuePendingProjectAction()
+    }
+
+    function continuePendingProjectAction() {
+        const action = pendingProjectAction
+        const importUrl = pendingProjectImportUrl
+        pendingProjectAction = ""
+        pendingProjectImportUrl = ""
+        if (action === "open")
+            projectOpenDialog.open()
+        else if (action === "import")
+            performMeshImport(importUrl)
+        else if (action === "close")
+            window.close()
     }
 
     function selectedGeometry() {
@@ -86,6 +121,216 @@ ApplicationWindow {
 
     function geometryForKey(key) {
         return key === "source" ? importedGeometry : derivedGeometries[key]
+    }
+
+    function projectSceneDocument() {
+        syncActiveInstance()
+        const rows = []
+        for (let index = 0; index < sceneInstances.count; ++index) {
+            const row = sceneInstances.get(index)
+            rows.push({
+                instanceId: row.instanceId, name: row.name, sourceUrl: row.sourceUrl,
+                piece: row.piece, geometryKey: row.geometryKey, instanceVisible: row.instanceVisible,
+                offsetX: row.offsetX, offsetY: row.offsetY, offsetZ: row.offsetZ,
+                rotationX: row.rotationX, rotationY: row.rotationY, rotationZ: row.rotationZ,
+                scaleX: row.scaleX, scaleY: row.scaleY, scaleZ: row.scaleZ
+            })
+        }
+        const selectedId = selectedInstanceIndex >= 0 && selectedInstanceIndex < sceneInstances.count
+            ? sceneInstances.get(selectedInstanceIndex).instanceId : ""
+        return { selectedInstanceId: selectedId, instances: rows }
+    }
+
+    function projectGeometryRecords() {
+        const records = []
+        const addedKeys = ({})
+        const addGeometry = (key, geometry) => {
+            if (!geometry || !geometry.loaded || addedKeys[key])
+                return
+            addedKeys[key] = true
+            const sourceName = String(geometry.fileName || "")
+            const extension = sourceName.match(/\.([^.\\/]+)$/)
+            records.push({
+                geometryKey: key,
+                sourceName: sourceName.split(/[\\/]/).pop(),
+                sourceFormat: extension ? extension[1].toUpperCase() : "unknown",
+                geometry: geometry
+            })
+        }
+        addGeometry("source", importedGeometry)
+        for (let index = 0; index < sceneInstances.count; ++index) {
+            const key = sceneInstances.get(index).geometryKey
+            if (key !== "source")
+                addGeometry(key, derivedGeometries[key])
+        }
+        return records
+    }
+
+    function saveNativeProject(folderUrl) {
+        syncActiveInstance()
+        const result = projectStore.saveProject(folderUrl, projectSceneDocument(), projectGeometryRecords())
+        if (!result.ok) {
+            statusLabel.text = result.error || "Could not save the native project."
+            if (pendingProjectAction)
+                unsavedProjectDialog.open()
+            return { ok: false, error: statusLabel.text }
+        }
+        projectDirectory = folderUrl.toString()
+        projectDirty = false
+        unsavedProjectDialog.close()
+        statusLabel.text = `Saved native project to ${folderUrl.toLocalFile()}`
+        if (pendingProjectAction)
+            continuePendingProjectAction()
+        return { ok: true, folder: folderUrl.toLocalFile() }
+    }
+
+    function saveCurrentNativeProject() {
+        if (!projectDirectory) {
+            projectParentDialog.open()
+            return
+        }
+        saveNativeProject(projectDirectory)
+    }
+
+    function saveNativeProjectAs() {
+        pendingProjectAction = ""
+        projectParentDialog.open()
+    }
+
+    function openNativeProjectDialog() {
+        projectOpenDialog.open()
+    }
+
+    function discardStagedProject(stagedProject) {
+        if (!stagedProject || !stagedProject.geometriesByKey)
+            return
+        for (const geometry of Object.values(stagedProject.geometriesByKey)) {
+            if (geometry)
+                geometry.destroy()
+        }
+    }
+
+    function stageNativeProject(folderUrl) {
+        const loaded = projectStore.loadProject(folderUrl)
+        if (!loaded.ok)
+            return { ok: false, error: loaded.error || "Could not open the native project." }
+
+        const geometriesByKey = ({})
+        const staged = { ok: false, error: "", document: loaded.document, geometriesByKey: geometriesByKey,
+                         folderUrl: folderUrl }
+        try {
+            for (const record of loaded.geometries) {
+                const key = String(record.geometryKey || "")
+                if (!key || geometriesByKey[key]) {
+                    staged.error = `Project has a duplicate or empty geometry key: ${key}`
+                    discardStagedProject(staged)
+                    return staged
+                }
+                const geometry = Qt.createQmlObject("import OutlawForge.NativeTypes 1.0\nMeshGeometry {}",
+                                                    view3d, `projectStageGeometry${Date.now()}_${Object.keys(geometriesByKey).length}`)
+                if (!geometry || !geometry.loadStl(record.assetUrl)) {
+                    staged.error = `Could not load project mesh ${record.assetUrl}`
+                    if (geometry)
+                        geometry.destroy()
+                    discardStagedProject(staged)
+                    return staged
+                }
+                if (geometry.revisionId !== record.revisionId || geometry.triangleCount !== record.triangleCount) {
+                    staged.error = `Project mesh ${record.assetUrl} does not match its saved revision metadata.`
+                    geometry.destroy()
+                    discardStagedProject(staged)
+                    return staged
+                }
+                geometriesByKey[key] = geometry
+            }
+
+            for (const row of loaded.document.instances) {
+                if (!geometriesByKey[row.geometryKey]) {
+                    staged.error = `Scene instance ${row.instanceId} references missing geometry ${row.geometryKey}.`
+                    discardStagedProject(staged)
+                    return staged
+                }
+            }
+            staged.ok = true
+            return staged
+        } catch (error) {
+            staged.error = `Could not stage native project: ${error}`
+            discardStagedProject(staged)
+            return staged
+        }
+    }
+
+    function commitNativeProject(stagedProject) {
+        if (!stagedProject || !stagedProject.ok)
+            return false
+        const document = stagedProject.document
+        const sourceGeometry = stagedProject.geometriesByKey.source || null
+        restoringProjectGeometry = true
+        if (sourceGeometry && !importedGeometry.copyMeshFrom(sourceGeometry)) {
+            restoringProjectGeometry = false
+            statusLabel.text = "Could not install the validated source mesh; the current scene was kept."
+            discardStagedProject(stagedProject)
+            return false
+        }
+        if (!sourceGeometry)
+            importedGeometry.clearMesh()
+
+        const previousDerived = derivedGeometries
+        const replacementDerived = ({})
+        for (const key of Object.keys(stagedProject.geometriesByKey)) {
+            if (key !== "source")
+                replacementDerived[key] = stagedProject.geometriesByKey[key]
+        }
+        derivedGeometries = replacementDerived
+        sceneInstances.clear()
+        for (const row of document.instances)
+            sceneInstances.append(row)
+
+        let maxGeometryId = 0
+        for (const key of Object.keys(replacementDerived)) {
+            const match = key.match(/^derived-(\\d+)$/)
+            if (match)
+                maxGeometryId = Math.max(maxGeometryId, Number(match[1]))
+        }
+        nextGeometryId = maxGeometryId + 1
+        let maxInstanceId = 0
+        for (const row of document.instances) {
+            const match = String(row.instanceId).match(/native-instance-(\\d+)$/)
+            if (match)
+                maxInstanceId = Math.max(maxInstanceId, Number(match[1]))
+        }
+        nextSceneInstanceId = maxInstanceId + 1
+
+        selectedInstanceIndex = -1
+        modelSelected = false
+        modelVisible = true
+        modelOffset = Qt.vector3d(0, 0, 0)
+        modelRotation = Qt.vector3d(0, 0, 0)
+        modelScale = Qt.vector3d(1, 1, 1)
+        const selectedId = String(document.selectedInstanceId || "")
+        for (let index = 0; index < sceneInstances.count; ++index) {
+            if (sceneInstances.get(index).instanceId === selectedId) {
+                setInstanceSelected(index)
+                break
+            }
+        }
+
+        for (const key of Object.keys(previousDerived)) {
+            if (previousDerived[key] && previousDerived[key] !== replacementDerived[key])
+                previousDerived[key].destroy()
+        }
+        for (const key of Object.keys(stagedProject.geometriesByKey)) {
+            if (key === "source")
+                stagedProject.geometriesByKey[key].destroy()
+        }
+        restoringProjectGeometry = false
+        projectDirectory = stagedProject.folderUrl.toString()
+        projectDirty = false
+        meshAnalysis = selectedInstanceIndex >= 0 ? selectedGeometry().analyzeMesh() : ({})
+        statusLabel.text = `Opened native project from ${stagedProject.folderUrl.toLocalFile()}`
+        if (selectedInstanceIndex >= 0)
+            Qt.callLater(frameImportedModel)
+        return true
     }
 
     function createDerivedGeometry() {
@@ -219,6 +464,7 @@ ApplicationWindow {
         setInstanceSelected(sourceIndex)
         refreshMeshAnalysis()
         statusLabel.text = `Split into ${outputs.length} edge-connected components. Each component is a separate selectable local mesh.`
+        markProjectDirty()
     }
 
     function simplifySelectedMesh() {
@@ -244,6 +490,7 @@ ApplicationWindow {
         setInstanceSelected(sourceIndex)
         refreshMeshAnalysis()
         statusLabel.text = `Local simplification: ${result.sourceTriangles} to ${result.triangles} triangles (${Number(result.actualReductionPercent).toFixed(1)}% reduction; ${Number(result.requestedReductionPercent).toFixed(0)}% requested). Source mesh retained as its earlier revision.`
+        markProjectDirty()
     }
 
     function applyPlaneSlice() {
@@ -305,6 +552,7 @@ ApplicationWindow {
         refreshMeshAnalysis()
         slicePlaneActive = false
         sliceDialog.close()
+        markProjectDirty()
     }
 
     function applyNumericScale(axis, targetValue) {
@@ -330,11 +578,19 @@ ApplicationWindow {
     }
 
     ListModel { id: sceneInstances }
+    NativeProjectStore { id: projectStore }
 
-    onModelOffsetChanged: syncActiveInstance()
-    onModelRotationChanged: syncActiveInstance()
-    onModelScaleChanged: syncActiveInstance()
-    onModelVisibleChanged: syncActiveInstance()
+    onClosing: function(close) {
+        if (projectDirty) {
+            close.accepted = false
+            window.requestProjectAction("close")
+        }
+    }
+
+    onModelOffsetChanged: { syncActiveInstance(); if (!restoringInstanceState) markProjectDirty() }
+    onModelRotationChanged: { syncActiveInstance(); if (!restoringInstanceState) markProjectDirty() }
+    onModelScaleChanged: { syncActiveInstance(); if (!restoringInstanceState) markProjectDirty() }
+    onModelVisibleChanged: { syncActiveInstance(); if (!restoringInstanceState) markProjectDirty() }
 
     header: ToolBar {
         height: 52
@@ -371,6 +627,10 @@ ApplicationWindow {
                 Menu {
                     id: fileMenu
                     title: "File"
+                    MenuItem { text: "Open Project...    Ctrl+Shift+O"; onTriggered: window.requestProjectAction("open") }
+                    MenuItem { text: "Save Project    Ctrl+S"; enabled: window.projectDirty || !!window.projectDirectory; onTriggered: window.saveCurrentNativeProject() }
+                    MenuItem { text: "Save Project As...    Ctrl+Shift+S"; onTriggered: window.saveNativeProjectAs() }
+                    MenuSeparator {}
                     MenuItem { text: "Import model...    Ctrl+O"; onTriggered: meshDialog.open() }
                     MenuItem { text: "Export selected mesh as STL..."; enabled: selectedInstanceIndex >= 0; onTriggered: exportDialog.open() }
                     MenuItem { text: "Clear scene"; enabled: sceneInstances.count > 0; onTriggered: window.clearScene() }
@@ -450,6 +710,9 @@ ApplicationWindow {
                     MenuItem { text: "Show build plate grid"; checkable: true; checked: window.gridVisible; onTriggered: window.gridVisible = checked }
                 }
             }
+            Shortcut { sequence: "Ctrl+S"; onActivated: window.saveCurrentNativeProject() }
+            Shortcut { sequence: "Ctrl+Shift+S"; onActivated: window.saveNativeProjectAs() }
+            Shortcut { sequence: "Ctrl+Shift+O"; onActivated: window.requestProjectAction("open") }
             Item { Layout.fillWidth: true }
             Label {
                 text: "Z-UP  /  MILLIMETRES"
@@ -894,7 +1157,7 @@ ApplicationWindow {
                         id: importedGeometry
                         onLoadFailed: function(message) { statusLabel.text = message }
                         onLoadedChanged: {
-                            if (loaded) {
+                            if (loaded && !window.restoringProjectGeometry) {
                                 statusLabel.text = `Loaded ${fileName}`
                                 sceneInstances.clear()
                                 for (const key of Object.keys(window.derivedGeometries))
@@ -908,6 +1171,7 @@ ApplicationWindow {
                                     instanceVisible: true
                                 })
                                 window.setInstanceSelected(0)
+                                window.markProjectDirty()
                                 Qt.callLater(frameImportedModel)
                             }
                         }
@@ -2050,7 +2314,101 @@ ApplicationWindow {
                 title: "Import a mesh"
                 nameFilters: ["Mesh files (*.stl *.obj *.3mf)", "STL mesh (*.stl)", "OBJ mesh (*.obj)", "3MF project (*.3mf)", "All files (*)"]
                 onAccepted: {
-                    window.importMesh(selectedFile)
+                    window.requestProjectAction("import", selectedFile)
+                }
+            }
+
+            FolderDialog {
+                id: projectParentDialog
+                title: "Choose where to create the native project folder"
+                onAccepted: projectNameDialog.open()
+                onRejected: if (window.pendingProjectAction) unsavedProjectDialog.open()
+            }
+
+            Dialog {
+                id: projectNameDialog
+                parent: Overlay.overlay
+                title: "Save Native Project As"
+                modal: true
+                standardButtons: Dialog.Save | Dialog.Cancel
+                contentItem: ColumnLayout {
+                    Label { text: "Project folder name" }
+                    TextField {
+                        id: projectNameField
+                        Layout.fillWidth: true
+                        text: "Outlaw Forge Project"
+                        selectByMouse: true
+                    }
+                }
+                onAccepted: {
+                    const name = projectNameField.text.trim()
+                    if (!name || name.includes("/") || name.includes("\\") || name.includes(":")
+                            || name.includes("*") || name.includes("?") || name.includes("\"")
+                            || name.includes("<") || name.includes(">") || name.includes("|")) {
+                        statusLabel.text = "Choose a project name without Windows filename characters."
+                        return
+                    }
+                    const selectedParentUrl = projectParentDialog.selectedFolder.toString()
+                    const parentUrl = selectedParentUrl.endsWith("/")
+                        ? selectedParentUrl.slice(0, -1) : selectedParentUrl
+                    const folderUrl = Qt.resolvedUrl(`${parentUrl}/${encodeURIComponent(name)}.oforge`)
+                    window.saveNativeProject(folderUrl)
+                }
+                onRejected: if (window.pendingProjectAction) unsavedProjectDialog.open()
+            }
+
+            FolderDialog {
+                id: projectOpenDialog
+                title: "Open an Outlaw Forge project folder"
+                onAccepted: {
+                    const staged = window.stageNativeProject(selectedFolder)
+                    if (!staged.ok) {
+                        statusLabel.text = staged.error
+                        return
+                    }
+                    window.commitNativeProject(staged)
+                }
+            }
+
+            Dialog {
+                id: unsavedProjectDialog
+                parent: Overlay.overlay
+                title: "Unsaved Project Changes"
+                modal: true
+                standardButtons: Dialog.NoButton
+                contentItem: ColumnLayout {
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Save changes to the current native project before continuing?"
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.alignment: Qt.AlignRight
+                        Button {
+                            text: "Save"
+                            onClicked: {
+                                unsavedProjectDialog.close()
+                                window.saveCurrentNativeProject()
+                            }
+                        }
+                        Button {
+                            text: "Discard"
+                            onClicked: {
+                                unsavedProjectDialog.close()
+                                if (window.pendingProjectAction === "close")
+                                    window.projectDirty = false
+                                window.continuePendingProjectAction()
+                            }
+                        }
+                        Button {
+                            text: "Cancel"
+                            onClicked: {
+                                unsavedProjectDialog.close()
+                                window.pendingProjectAction = ""
+                                window.pendingProjectImportUrl = ""
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2371,6 +2729,10 @@ ApplicationWindow {
     }
 
     function importMesh(url) {
+        requestProjectAction("import", url)
+    }
+
+    function performMeshImport(url) {
         const path = url.toString().toLowerCase()
         window.pendingImportUrl = url.toString()
         let loaded = false
@@ -2499,6 +2861,8 @@ ApplicationWindow {
         sceneInstances.setProperty(selectedInstanceIndex, "scaleY", modelScale.y)
         sceneInstances.setProperty(selectedInstanceIndex, "scaleZ", modelScale.z)
         sceneInstances.setProperty(selectedInstanceIndex, "instanceVisible", modelVisible)
+        if (!restoringInstanceState)
+            markProjectDirty()
     }
 
     function setInstanceSelected(index) {
@@ -2560,6 +2924,7 @@ ApplicationWindow {
             instanceVisible: true
         })
         setInstanceSelected(sceneInstances.count - 1)
+        markProjectDirty()
         statusLabel.text = "Duplicated mesh instance"
     }
 
@@ -2587,10 +2952,12 @@ ApplicationWindow {
             for (const key of Object.keys(derivedGeometries))
                 destroyDerivedGeometry(key)
             importedGeometry.clearMesh()
+            markProjectDirty()
             statusLabel.text = "Scene is empty"
             return
         }
         setInstanceSelected(Math.min(removedIndex, sceneInstances.count - 1))
+        markProjectDirty()
         statusLabel.text = "Removed mesh instance"
     }
 

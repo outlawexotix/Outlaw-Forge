@@ -132,23 +132,23 @@ Enforce a 16 MiB manifest limit, a 20,000,000-triangle per-mesh limit matching `
 - `stageNativeProject` constructs temporary `MeshGeometry` objects, loads every returned `assetUrl`, and verifies exact revision id and triangle count; it returns `{ ok, error, document, geometriesByKey }` and does not mutate the active scene.
 - `commitNativeProject` copies the validated `source` geometry into `importedGeometry`, replaces derived geometry references and ordered `sceneInstances`, restores selected instance id, and clears dirty state only after commit.
 
-- [ ] **Step 1: Implement QML scene snapshot construction.**
+- [x] **Step 1: Implement QML scene snapshot construction.**
 
 Serialize every scene row and unique geometry key. Include `importedGeometry` as the source geometry record even when active instances point to derived geometry; include each derived geometry still referenced by a scene row. Preserve source path as provenance only.
 
-- [ ] **Step 2: Implement staged load and commit.**
+- [x] **Step 2: Implement staged load and commit.**
 
 Load all candidate geometries before mutating the live scene. Validate every instance reference against the candidate geometry map. On success, clone the source asset into the fixed `importedGeometry` object, install candidate derived objects, replace scene rows in order, restore selection by id, update next ids, and destroy superseded derived objects. On any staging or validation error, destroy candidates and retain the current scene exactly. Exact revision id comparison depends on `exportLocalStl` from Task 1.
 
-- [ ] **Step 3: Add Save, Save As, and Open Project menu/dialog flows.**
+- [x] **Step 3: Add Save, Save As, and Open Project menu/dialog flows.**
 
 Save As selects a parent directory, collects a project name, creates `<name>.oforge`, and saves there. Save targets `projectDirectory`, or routes to Save As if unset. Open selects the project folder and calls stage then commit. Add Ctrl+S for Save, Ctrl+Shift+S for Save As, and Ctrl+Shift+O for Open Project to avoid the existing Ctrl+O mesh-import shortcut. Set `projectDirectory` and clear `projectDirty` only after successful save or load.
 
-- [ ] **Step 4: Add QML round-trip coverage where an established test harness permits it; otherwise record a deterministic manual scenario in the QA checklist.**
+- [x] **Step 4: Add QML round-trip coverage where an established test harness permits it; otherwise record a deterministic manual scenario in the QA checklist.**
 
 The scenario must include two instances sharing a geometry revision, different signed transforms, one hidden instance, a selected derived revision, source-path removal after save, and reopen comparison of order, selection, transforms, visibility, and mesh revision ids.
 
-- [ ] **Step 5: Commit save/open integration.**
+- [x] **Step 5: Commit save/open integration.**
 
 ### Task 5: Protect unsaved scene work and update native documentation
 
