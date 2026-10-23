@@ -106,19 +106,19 @@ Expected: manifest metadata, ordered scene rows, geometry maps, exact revision i
 - Modify: `apps/native/src/NativeProjectStore.cpp`
 - Modify: `apps/native/tests/NativeProjectStoreTests.cpp`
 
-- [ ] **Step 1: Add failing tests for invalid manifests and assets.**
+- [x] **Step 1: Add failing tests for invalid manifests and assets.**
 
 Add tests named `rejectsUnsupportedSchemaVersion`, `rejectsMalformedSceneField`, `rejectsUnknownGeometryReference`, `rejectsUnsafeAssetPath`, `rejectsMissingAsset`, `rejectsCorruptAssetDigest`, `rejectsTriangleCountMismatch`, and `rejectsAssetOverTriangleLimit`. Verify each failure returns an actionable error.
 
-- [ ] **Step 2: Run the new validation tests and confirm each fails for its expected reason.**
+- [x] **Step 2: Run the new validation tests and confirm uncovered cases fail before validation.**
 
 Run: `cmake --build apps/native/build-mingw2 --target native-project-store-tests --parallel 4` then `apps/native/build-mingw2/native-project-store-tests.exe`
 
-- [ ] **Step 3: Enforce schema, size, path, reference, hash, and triangle-count validation.**
+- [x] **Step 3: Enforce schema, size, path, reference, hash, and triangle-count validation.**
 
 Enforce a 16 MiB manifest limit, a 20,000,000-triangle per-mesh limit matching `MeshGeometry::loadStl`, and a 4 GiB total unique-asset limit before large allocation. Require finite transform values, unique instance and geometry keys, an existing selected instance when non-empty, valid geometry references, and safe relative asset paths rooted under `meshes/`. Check the binary STL byte length and declared count before hashing/loading; stream SHA-256 calculation so the asset does not need to be duplicated in memory. Return actionable errors without mutating an existing project.
 
-- [ ] **Step 4: Commit after all project-store tests pass.**
+- [x] **Step 4: Commit after all project-store tests pass.**
 
 ### Task 4: Connect save/open to the native scene
 

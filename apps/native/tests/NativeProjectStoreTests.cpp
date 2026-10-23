@@ -8,9 +8,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QtTest>
+#include <functional>
 
 namespace {
 bool writeStl(const QString &path, bool altered = false)
@@ -66,6 +68,48 @@ QByteArray fileBytes(const QString &path)
     if (!file.open(QIODevice::ReadOnly))
         return {};
     return file.readAll();
+}
+
+bool writeManifest(const QString &projectPath, const QJsonObject &manifest)
+{
+    QSaveFile file(QDir(projectPath).filePath(QStringLiteral("project.json")));
+    if (!file.open(QIODevice::WriteOnly))
+        return false;
+    const QByteArray bytes = QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+    return file.write(bytes) == bytes.size() && file.commit();
+}
+
+bool createValidProject(const QString &root, QString *projectPath, QJsonObject *manifest)
+{
+    const QString sourcePath = QDir(root).filePath(QStringLiteral("fixture.stl"));
+    *projectPath = QDir(root).filePath(QStringLiteral("Fixture.oforge"));
+    if (!writeStl(sourcePath))
+        return false;
+    MeshGeometry geometry;
+    if (!geometry.loadStl(QUrl::fromLocalFile(sourcePath)))
+        return false;
+    const QVariantList rows{instance(QStringLiteral("fixture-instance"), QStringLiteral("source"), 1.0, true, 1.0)};
+    NativeProjectStore store;
+    const QVariantMap saved = store.saveProject(QUrl::fromLocalFile(*projectPath),
+        sceneWith(rows, QStringLiteral("fixture-instance")),
+        {geometryRecord(QStringLiteral("source"), QStringLiteral("fixture.stl"), &geometry)});
+    if (!saved.value(QStringLiteral("ok")).toBool())
+        return false;
+    *manifest = QJsonDocument::fromJson(fileBytes(QDir(*projectPath).filePath(QStringLiteral("project.json")))).object();
+    return !manifest->isEmpty();
+}
+
+QVariantMap loadWithMutation(QTemporaryDir &temporary, const std::function<void(QJsonObject &, const QString &)> &mutate)
+{
+    QString projectPath;
+    QJsonObject manifest;
+    if (!createValidProject(temporary.path(), &projectPath, &manifest))
+        return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("Could not create valid test project.")}};
+    mutate(manifest, projectPath);
+    if (!writeManifest(projectPath, manifest))
+        return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("Could not write modified test manifest.")}};
+    NativeProjectStore store;
+    return store.loadProject(QUrl::fromLocalFile(projectPath));
 }
 }
 
@@ -178,6 +222,126 @@ private slots:
         const QVariantMap reopened = store.loadProject(QUrl::fromLocalFile(projectPath));
         QVERIFY2(reopened.value(QStringLiteral("ok")).toBool(), qPrintable(reopened.value(QStringLiteral("error")).toString()));
         QCOMPARE(reopened.value(QStringLiteral("document")).toMap().value(QStringLiteral("selectedInstanceId")).toString(), QStringLiteral("keep"));
+    }
+
+    void rejectsUnsupportedSchemaVersion()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QVariantMap loaded = loadWithMutation(temporary, [](QJsonObject &manifest, const QString &) {
+            manifest.insert(QStringLiteral("schemaVersion"), 2);
+        });
+        QVERIFY(!loaded.value(QStringLiteral("ok")).toBool());
+        QVERIFY(loaded.value(QStringLiteral("error")).toString().contains(QStringLiteral("unsupported schema"), Qt::CaseInsensitive));
+    }
+
+    void rejectsMalformedSceneField()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QVariantMap loaded = loadWithMutation(temporary, [](QJsonObject &manifest, const QString &) {
+            manifest.insert(QStringLiteral("instances"), QStringLiteral("not-an-array"));
+        });
+        QVERIFY(!loaded.value(QStringLiteral("ok")).toBool());
+        QVERIFY(!loaded.value(QStringLiteral("error")).toString().isEmpty());
+    }
+
+    void rejectsUnknownGeometryReference()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QVariantMap loaded = loadWithMutation(temporary, [](QJsonObject &manifest, const QString &) {
+            QJsonArray rows = manifest.value(QStringLiteral("instances")).toArray();
+            QJsonObject row = rows.first().toObject();
+            row.insert(QStringLiteral("geometryKey"), QStringLiteral("does-not-exist"));
+            rows[0] = row;
+            manifest.insert(QStringLiteral("instances"), rows);
+        });
+        QVERIFY(!loaded.value(QStringLiteral("ok")).toBool());
+        QVERIFY(loaded.value(QStringLiteral("error")).toString().contains(QStringLiteral("geometry"), Qt::CaseInsensitive));
+    }
+
+    void rejectsUnsafeAssetPath()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QVariantMap loaded = loadWithMutation(temporary, [](QJsonObject &manifest, const QString &projectPath) {
+            QJsonArray geometries = manifest.value(QStringLiteral("geometries")).toArray();
+            QJsonObject geometry = geometries.first().toObject();
+            const QString sourcePath = QDir(projectPath).filePath(geometry.value(QStringLiteral("assetPath")).toString());
+            const QString outsidePath = QDir(projectPath).filePath(QStringLiteral("../outside.stl"));
+            QFile::copy(sourcePath, outsidePath);
+            geometry.insert(QStringLiteral("assetPath"), QStringLiteral("../outside.stl"));
+            geometries[0] = geometry;
+            manifest.insert(QStringLiteral("geometries"), geometries);
+        });
+        QVERIFY(!loaded.value(QStringLiteral("ok")).toBool());
+        QVERIFY(loaded.value(QStringLiteral("error")).toString().contains(QStringLiteral("safe"), Qt::CaseInsensitive));
+    }
+
+    void rejectsMissingAsset()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QVariantMap loaded = loadWithMutation(temporary, [](QJsonObject &manifest, const QString &) {
+            QJsonArray geometries = manifest.value(QStringLiteral("geometries")).toArray();
+            QJsonObject geometry = geometries.first().toObject();
+            geometry.insert(QStringLiteral("assetPath"), QStringLiteral("meshes/missing.stl"));
+            geometries[0] = geometry;
+            manifest.insert(QStringLiteral("geometries"), geometries);
+        });
+        QVERIFY(!loaded.value(QStringLiteral("ok")).toBool());
+        QVERIFY(!loaded.value(QStringLiteral("error")).toString().isEmpty());
+    }
+
+    void rejectsCorruptAssetDigest()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QVariantMap loaded = loadWithMutation(temporary, [](QJsonObject &manifest, const QString &projectPath) {
+            QJsonArray geometries = manifest.value(QStringLiteral("geometries")).toArray();
+            QJsonObject geometry = geometries.first().toObject();
+            const QString oldAsset = QDir(projectPath).filePath(geometry.value(QStringLiteral("assetPath")).toString());
+            const QString invalidDigest(64, QLatin1Char('0'));
+            const QString invalidAssetPath = QStringLiteral("meshes/") + invalidDigest + QStringLiteral(".stl");
+            QFile::copy(oldAsset, QDir(projectPath).filePath(invalidAssetPath));
+            geometry.insert(QStringLiteral("assetPath"), invalidAssetPath);
+            geometry.insert(QStringLiteral("sha256"), invalidDigest);
+            geometries[0] = geometry;
+            manifest.insert(QStringLiteral("geometries"), geometries);
+        });
+        QVERIFY(!loaded.value(QStringLiteral("ok")).toBool());
+        QVERIFY(loaded.value(QStringLiteral("error")).toString().contains(QStringLiteral("SHA-256"), Qt::CaseInsensitive));
+    }
+
+    void rejectsTriangleCountMismatch()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QVariantMap loaded = loadWithMutation(temporary, [](QJsonObject &manifest, const QString &) {
+            QJsonArray geometries = manifest.value(QStringLiteral("geometries")).toArray();
+            QJsonObject geometry = geometries.first().toObject();
+            geometry.insert(QStringLiteral("triangleCount"), geometry.value(QStringLiteral("triangleCount")).toInt() + 1);
+            geometries[0] = geometry;
+            manifest.insert(QStringLiteral("geometries"), geometries);
+        });
+        QVERIFY(!loaded.value(QStringLiteral("ok")).toBool());
+        QVERIFY(loaded.value(QStringLiteral("error")).toString().contains(QStringLiteral("triangle"), Qt::CaseInsensitive));
+    }
+
+    void rejectsAssetOverTriangleLimit()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QVariantMap loaded = loadWithMutation(temporary, [](QJsonObject &manifest, const QString &) {
+            QJsonArray geometries = manifest.value(QStringLiteral("geometries")).toArray();
+            QJsonObject geometry = geometries.first().toObject();
+            geometry.insert(QStringLiteral("triangleCount"), 20'000'001);
+            geometries[0] = geometry;
+            manifest.insert(QStringLiteral("geometries"), geometries);
+        });
+        QVERIFY(!loaded.value(QStringLiteral("ok")).toBool());
+        QVERIFY(loaded.value(QStringLiteral("error")).toString().contains(QStringLiteral("limit"), Qt::CaseInsensitive));
     }
 };
 
