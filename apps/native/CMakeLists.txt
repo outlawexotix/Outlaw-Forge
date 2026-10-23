@@ -14,14 +14,19 @@ qt_standard_project_setup(REQUIRES 6.6)
 
 qt_add_executable(outlaw-forge-native
     src/main.cpp
+    resources/icons.qrc
     src/MeshGeometry.h
     src/MeshGeometry.cpp
     src/SlicePlaneMapper.h
     src/SlicePlaneMapper.cpp
-    src/SliceCommandClient.h
-    src/SliceCommandClient.cpp
+    src/GeometryCommandClient.h
+    src/GeometryCommandClient.cpp
     src/third_party/mapbox/earcut.hpp
 )
+
+if(WIN32)
+    target_sources(outlaw-forge-native PRIVATE resources/outlaw-forge.rc)
+endif()
 
 # MinGW's moc predefines probe fails when CMake is installed under a path with
 # spaces. The project headers do not rely on compiler-only preprocessor state.
@@ -85,25 +90,25 @@ if(BUILD_TESTING)
     )
     set_tests_properties(native-slice-plane-tests PROPERTIES TIMEOUT 30)
 
-    qt_add_executable(native-slice-command-tests
-        tests/SliceCommandClientTests.cpp
+    qt_add_executable(native-geometry-command-tests
+        tests/GeometryCommandClientTests.cpp
         src/SlicePlaneMapper.h
         src/SlicePlaneMapper.cpp
-        src/SliceCommandClient.h
-        src/SliceCommandClient.cpp
+        src/GeometryCommandClient.h
+        src/GeometryCommandClient.cpp
     )
-    set_property(TARGET native-slice-command-tests PROPERTY AUTOMOC_COMPILER_PREDEFINES OFF)
-    target_link_libraries(native-slice-command-tests PRIVATE
+    set_property(TARGET native-geometry-command-tests PROPERTY AUTOMOC_COMPILER_PREDEFINES OFF)
+    target_link_libraries(native-geometry-command-tests PRIVATE
         Qt6::Quick
         Qt6::Network
         Qt6::Test
     )
-    add_test(NAME native-slice-command-tests
+    add_test(NAME native-geometry-command-tests
         COMMAND ${CMAKE_COMMAND} -E env
             "PATH=$<TARGET_FILE_DIR:Qt6::Test>;$ENV{PATH}"
-            $<TARGET_FILE:native-slice-command-tests>
+            $<TARGET_FILE:native-geometry-command-tests>
     )
-    set_tests_properties(native-slice-command-tests PROPERTIES TIMEOUT 30)
+    set_tests_properties(native-geometry-command-tests PROPERTIES TIMEOUT 30)
 endif()
 
 if(WIN32)

@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="icons/outlaw-forge-icon.png">outlaw-forge-icon.png</file>
+    </qresource>
+</RCC>
