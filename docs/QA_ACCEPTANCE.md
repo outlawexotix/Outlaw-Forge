@@ -40,6 +40,8 @@ Run layers independently when a combined process times out. This distinguishes a
 - Sidecar startup selects a loopback port and reaches a healthy state.
 - Closing the Tauri desktop app terminates its sidecar process.
 - Desktop automation dry runs report prerequisite and path status without changing build outputs.
+- The main workbench readiness panel displays overhang, thin-wall, watertightness, printer-volume, and PLA material-estimate results for its selected model; repair, prepare-for-print, and STL export actions report their operation status.
+- The workflow rail reflects model presence, watertightness, build-volume fit, auto-orientation history, and export history. This UI state is separate from the backend and desktop lifecycle verification layers listed above.
 - The native slice request maps the active instance transform into source coordinates and keeps the original scene geometry on service/download failure.
 - Native slice status reports `is_watertight` separately for both API results. Capping is requested, but the native client does not heal an open result.
 - User-visible workbench copy contains no em dash or separator en dash characters.

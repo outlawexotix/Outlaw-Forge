@@ -8,7 +8,7 @@ Outlaw Forge currently has two desktop-facing implementations and one shared geo
 2. **Browser development workbench:** the same Next.js interface served for development, connected to a separately started local API.
 3. **Native viewport foundation:** a separate Qt Quick 3D executable under `apps/native/`. It is experimental and is not packaged into the Tauri application.
 
-The main workbench remains the fuller project workflow. The native viewport has its own documented migration boundary and currently sends STL/OBJ slicing through the existing API. Native viewport features should not be described as Tauri features unless they have also been integrated into the Tauri workbench.
+The main workbench remains the fuller project workflow. Its workflow rail tracks inspection, repair, readiness, print preparation, and export; the selected-model panel reports overhangs, thin walls, watertightness, printer-volume fit, and a PLA material estimate, with explicit repair, orientation preparation, and STL export actions. The native viewport has its own documented migration boundary and currently sends STL/OBJ slicing through the existing API. Native viewport features should not be described as Tauri features unless they have also been integrated into the Tauri workbench.
 
 ## Repository map
 

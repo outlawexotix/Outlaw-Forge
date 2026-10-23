@@ -28,10 +28,10 @@ d:\Outlaw-Forge\
 │   │   ├── app/             Core application code (api routes, core routers, models, schemas, services)
 │   │   └── tests/           Pytest test suite (unit, integration, geometry checks)
 │   ├── web/                 Next.js 16 / React 19 workbench and Three.js 3D viewport
-│   └── native/              Separate experimental Qt Quick 3D viewport foundation
-│       ├── app/             App router pages and API route proxies
-│       ├── components/      Workbench UI components, studio tools, toolbars, sidebars
-│       └── hooks/           React hooks for project state, mesh manipulation, and viewport interaction
+│   └── native/              Separate experimental Qt Quick 3D viewport application
+│       ├── qml/             Native scene, viewport, and inspector UI
+│       ├── src/             C++ mesh readers, geometry operations, and API client
+│       └── tests/           Native geometry, plane mapping, and API client tests
 ├── packages/
 │   ├── shared/              Shared TypeScript API, schema, and viewport contracts (mirrors FastAPI Pydantic models)
 │   ├── three-tools/         Three.js geometry loaders (STL/OBJ/GLTF/GLB/3MF), transforms, materials, raycasting, camera rigs

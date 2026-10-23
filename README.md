@@ -18,6 +18,7 @@ The Qt application is not part of the Tauri package and does not replace the mai
 
 - Import STL, OBJ, GLB, GLTF, and 3MF through the supported project workflows.
 - Inspect dimensions, mesh health, overhangs, thin walls, watertightness, printer fit, and estimated material cost.
+- Follow the five-stage Inspect, Repair, Verify Readiness, Prepare for Print, and Export workflow. The readiness panel shows overhang, thin-wall, watertightness, printer-volume, and material-estimate results for the selected model.
 - Transform, orient, arrange, repair, hollow, and slice meshes through deterministic API operations.
 - Create connector pins, infill, and rib reinforcement where supported by the geometry service.
 - Manage SQLite-backed projects, source files, working model revisions, printer profiles, and operation history.
