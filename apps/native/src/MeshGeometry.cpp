@@ -64,6 +64,62 @@ bool finite(const QVector3D &v)
     return std::isfinite(v.x()) && std::isfinite(v.y()) && std::isfinite(v.z());
 }
 
+template <typename Transform>
+QVariantMap writeBinaryStl(const QUrl &url, const QVector<QVector3D> &points,
+                           const QString &revisionId, Transform transform, bool reverseWinding)
+{
+    if (points.isEmpty() || points.size() % 3 != 0)
+        return {{QStringLiteral("error"), QStringLiteral("Load a mesh before exporting STL.")}};
+    if (!url.isLocalFile())
+        return {{QStringLiteral("error"), QStringLiteral("STL export requires a local file path.")}};
+
+    const QString path = url.toLocalFile();
+    if (QFileInfo(path).suffix().compare(QStringLiteral("stl"), Qt::CaseInsensitive) != 0)
+        return {{QStringLiteral("error"), QStringLiteral("Choose an .stl file for export.")}};
+    const quint64 triangleCount = quint64(points.size() / 3);
+    if (triangleCount > std::numeric_limits<quint32>::max())
+        return {{QStringLiteral("error"), QStringLiteral("This mesh exceeds the binary STL triangle limit.")}};
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+        return {{QStringLiteral("error"), QStringLiteral("Could not create the STL export: %1").arg(file.errorString())}};
+
+    QByteArray header(80, '\0');
+    const QByteArray label = QByteArrayLiteral("Outlaw Forge local STL export (millimetres)");
+    std::copy(label.cbegin(), label.cend(), header.begin());
+    if (file.write(header) != header.size())
+        return {{QStringLiteral("error"), QStringLiteral("Could not write the STL header: %1").arg(file.errorString())}};
+
+    QDataStream stream(&file);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+    stream << quint32(triangleCount);
+    for (qsizetype i = 0; i + 2 < points.size(); i += 3) {
+        const QVector3D a = transform(points[i]);
+        QVector3D b = transform(points[i + 1]);
+        QVector3D c = transform(points[i + 2]);
+        if (reverseWinding)
+            std::swap(b, c);
+        QVector3D normal = QVector3D::crossProduct(b - a, c - a);
+        if (normal.lengthSquared() > 1.0e-20f)
+            normal.normalize();
+        else
+            normal = QVector3D(0, 0, 0);
+        for (float value : {normal.x(), normal.y(), normal.z(),
+                            a.x(), a.y(), a.z(), b.x(), b.y(), b.z(), c.x(), c.y(), c.z()})
+            stream << value;
+        stream << quint16(0);
+        if (stream.status() != QDataStream::Ok)
+            return {{QStringLiteral("error"), QStringLiteral("Could not write all STL triangles: %1").arg(file.errorString())}};
+    }
+    if (stream.status() != QDataStream::Ok || !file.commit())
+        return {{QStringLiteral("error"), QStringLiteral("Could not finish the STL export: %1").arg(file.errorString())}};
+    return {{QStringLiteral("path"), path},
+            {QStringLiteral("triangles"), qlonglong(triangleCount)},
+            {QStringLiteral("units"), QStringLiteral("mm")},
+            {QStringLiteral("revisionId"), revisionId}};
+}
+
 QString vertexKey(const QVector3D &point, double tolerance)
 {
     const auto q = [tolerance](float value) { return qlonglong(std::llround(double(value) / tolerance)); };
@@ -711,38 +767,28 @@ bool MeshGeometry::load3mf(const QUrl &url)
     return setTrianglePoints(points, path, QStringLiteral("3MF"));
 }
 
+bool MeshGeometry::copyMeshFrom(const MeshGeometry *source)
+{
+    if (!source || !source->m_loaded || source->m_trianglePoints.isEmpty())
+        return false;
+    return setTrianglePoints(source->m_trianglePoints, source->m_fileName, QStringLiteral("project mesh"));
+}
+
+QVariantMap MeshGeometry::exportLocalStl(const QUrl &url) const
+{
+    return writeBinaryStl(url, m_trianglePoints, m_revisionId,
+                          [](const QVector3D &point) { return point; }, false);
+}
+
 QVariantMap MeshGeometry::exportStl(const QUrl &url, const QVector3D &offsetMm,
                                     const QVector3D &rotationDeg, const QVector3D &scale) const
 {
-    if (!m_loaded || m_trianglePoints.isEmpty())
-        return {{QStringLiteral("error"), QStringLiteral("Load a mesh before exporting STL.")}};
-    if (!url.isLocalFile())
-        return {{QStringLiteral("error"), QStringLiteral("STL export requires a local file path.")}};
     if (!finite(offsetMm) || !finite(rotationDeg) || !finite(scale)
         || scale.x() == 0.0f || scale.y() == 0.0f || scale.z() == 0.0f)
         return {{QStringLiteral("error"), QStringLiteral("The selected instance has invalid transform values.")}};
 
-    const QString path = url.toLocalFile();
-    if (QFileInfo(path).suffix().compare(QStringLiteral("stl"), Qt::CaseInsensitive) != 0)
-        return {{QStringLiteral("error"), QStringLiteral("Choose an .stl file for export.")}};
-    const quint64 triangleCount = quint64(m_trianglePoints.size() / 3);
-    if (triangleCount > std::numeric_limits<quint32>::max())
-        return {{QStringLiteral("error"), QStringLiteral("This mesh exceeds the binary STL triangle limit.")}};
-
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly))
-        return {{QStringLiteral("error"), QStringLiteral("Could not create the STL export: %1").arg(file.errorString())}};
-
-    QByteArray header(80, '\0');
-    const QByteArray label = QByteArrayLiteral("Outlaw Forge local STL export (millimetres)");
-    std::copy(label.cbegin(), label.cend(), header.begin());
-    if (file.write(header) != header.size())
-        return {{QStringLiteral("error"), QStringLiteral("Could not write the STL header: %1").arg(file.errorString())}};
-
-    QDataStream stream(&file);
-    stream.setByteOrder(QDataStream::LittleEndian);
-    stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
-    stream << quint32(triangleCount);
+    if (!m_loaded || m_trianglePoints.isEmpty())
+        return {{QStringLiteral("error"), QStringLiteral("Load a mesh before exporting STL.")}};
     const QVector3D origin(m_center.x(), m_center.y(), m_center.z() - m_dimensions.z() * 0.5f);
     const QQuaternion rotation = QQuaternion::fromEulerAngles(rotationDeg.x(), rotationDeg.y(), rotationDeg.z());
     const auto transformed = [&](const QVector3D &point) {
@@ -751,30 +797,8 @@ QVariantMap MeshGeometry::exportStl(const QUrl &url, const QVector3D &offsetMm,
                               (point.z() - origin.z()) * scale.z());
         return origin + offsetMm + rotation.rotatedVector(local);
     };
-    for (qsizetype i = 0; i + 2 < m_trianglePoints.size(); i += 3) {
-        const QVector3D a = transformed(m_trianglePoints[i]);
-        QVector3D b = transformed(m_trianglePoints[i + 1]);
-        QVector3D c = transformed(m_trianglePoints[i + 2]);
-        if (scale.x() * scale.y() * scale.z() < 0.0f)
-            std::swap(b, c);
-        QVector3D normal = QVector3D::crossProduct(b - a, c - a);
-        if (normal.lengthSquared() > 1.0e-20f)
-            normal.normalize();
-        else
-            normal = QVector3D(0, 0, 0);
-        for (float value : {normal.x(), normal.y(), normal.z(),
-                            a.x(), a.y(), a.z(), b.x(), b.y(), b.z(), c.x(), c.y(), c.z()})
-            stream << value;
-        stream << quint16(0);
-        if (stream.status() != QDataStream::Ok)
-            return {{QStringLiteral("error"), QStringLiteral("Could not write all STL triangles: %1").arg(file.errorString())}};
-    }
-    if (stream.status() != QDataStream::Ok || !file.commit())
-        return {{QStringLiteral("error"), QStringLiteral("Could not finish the STL export: %1").arg(file.errorString())}};
-    return {{QStringLiteral("path"), path},
-            {QStringLiteral("triangles"), qlonglong(triangleCount)},
-            {QStringLiteral("units"), QStringLiteral("mm")},
-            {QStringLiteral("revisionId"), m_revisionId}};
+    return writeBinaryStl(url, m_trianglePoints, m_revisionId, transformed,
+                          scale.x() * scale.y() * scale.z() < 0.0f);
 }
 
 bool MeshGeometry::setTrianglePoints(const QVector<QVector3D> &points, const QString &path, const QString &format)

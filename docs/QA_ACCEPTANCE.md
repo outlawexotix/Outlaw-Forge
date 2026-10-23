@@ -19,6 +19,7 @@ Outlaw Forge is checked in separate layers because a backend test, static fronte
 | Native top command menus | Open File/Edit/View/Window/Settings and exercise local scene actions, viewport toggles, panel/grid visibility, and local file dialogs | No |
 | Native local geometry | Import local STL/OBJ/3MF files and run analyze, repair, auto-orient, cut, and STL export in `apps/native/` | No |
 | Native components and simplification | Split disconnected components and simplify a derived mesh; inspect scene entries, triangle counts, and topology metrics | No |
+| Native project persistence | Save As a `.oforge` folder, save edits, reopen it, and compare instance order, selection, transforms, visibility, and geometry revisions; verify invalid assets do not replace the live scene | No |
 
 Configure the native target with Qt 6.6+, CMake 3.21+, and a C++20 toolchain. See [the native README](../apps/native/README.md) for configuration and launch commands. Qt geometry commands run locally and do not require a running API. A passing test or build does not prove that every arbitrary customer mesh can be repaired or simplified without topology defects; inspect the output analysis before export.
 
@@ -47,7 +48,10 @@ Run layers independently when a combined process times out. This distinguishes a
 - Native geometry commands require no API URL, network access, or running service.
 - Native slice status distinguishes successful cap generation from the final watertightness metrics of each output.
 - Native split and simplify operations create selectable derived geometry and leave the imported source revision unchanged.
+- Native project save creates `project.json` plus content-addressed STL snapshots in `meshes/`; Open stages and validates all assets before restoring the scene. The project remains reopenable after moving the original source file.
+- Native project dirty prompts preserve Save, Discard, and Cancel behavior for Open Project, replacement import, and window close; failed saves and failed project loads retain the existing scene and dirty state.
 - Native top command menus expose the same scene and viewport operations as the workbench controls. Actions requiring a selection are disabled with an empty scene; local file dialogs work without the FastAPI service.
+- Native project persistence manual scenario: import a mesh, create two instances sharing a geometry revision, give them different signed transforms, hide one, select a derived revision, and Save As. Move or rename the original source file, close and reopen the project, and compare order, selected ID, transforms, visibility, and geometry revision IDs. Then open a copied project with a missing or corrupted mesh asset and verify the current scene is unchanged. Exercise Save, Save As, and Open keyboard shortcuts plus Save/Discard/Cancel for dirty Open, replacement import, and close.
 - User-visible workbench copy contains no em dash or separator en dash characters.
 
 ## Release checks

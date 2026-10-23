@@ -5,6 +5,7 @@
 #include <QIcon>
 #include <QtQml/qqml.h>
 #include "MeshGeometry.h"
+#include "NativeProjectStore.h"
 #include <cstdlib>
 
 int main(int argc, char *argv[])
@@ -15,6 +16,7 @@ int main(int argc, char *argv[])
     QGuiApplication::setWindowIcon(QIcon(":/icons/outlaw-forge-icon.png"));
     QQuickStyle::setStyle("Basic");
     qmlRegisterType<MeshGeometry>("OutlawForge.NativeTypes", 1, 0, "MeshGeometry");
+    qmlRegisterType<NativeProjectStore>("OutlawForge.NativeTypes", 1, 0, "NativeProjectStore");
 
     QQmlApplicationEngine engine;
     engine.loadFromModule("OutlawForge.Native", "Main");
