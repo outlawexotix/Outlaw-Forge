@@ -14,6 +14,8 @@ qt_standard_project_setup(REQUIRES 6.6)
 
 qt_add_executable(outlaw-forge-native
     src/main.cpp
+    src/NativeProjectStore.h
+    src/NativeProjectStore.cpp
     resources/icons.qrc
     src/MeshGeometry.h
     src/MeshGeometry.cpp
@@ -67,6 +69,29 @@ if(BUILD_TESTING)
             $<TARGET_FILE:native-mesh-slice-tests>
     )
     set_tests_properties(native-mesh-slice-tests PROPERTIES TIMEOUT 30)
+
+    qt_add_executable(native-project-store-tests
+        tests/NativeProjectStoreTests.cpp
+        src/NativeProjectStore.h
+        src/NativeProjectStore.cpp
+        src/MeshGeometry.h
+        src/MeshGeometry.cpp
+        src/third_party/mapbox/earcut.hpp
+    )
+    set_property(TARGET native-project-store-tests PROPERTY AUTOMOC_COMPILER_PREDEFINES OFF)
+    target_include_directories(native-project-store-tests PRIVATE src src/third_party)
+    target_link_libraries(native-project-store-tests PRIVATE
+        Qt6::Quick
+        Qt6::Quick3D
+        Qt6::CorePrivate
+        Qt6::Test
+    )
+    add_test(NAME native-project-store-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+            "PATH=$<TARGET_FILE_DIR:Qt6::Test>;$ENV{PATH}"
+            $<TARGET_FILE:native-project-store-tests>
+    )
+    set_tests_properties(native-project-store-tests PROPERTIES TIMEOUT 30)
 
     qt_add_executable(native-slice-plane-tests
         tests/SlicePlaneMapperTests.cpp

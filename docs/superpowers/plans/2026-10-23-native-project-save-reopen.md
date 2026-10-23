@@ -76,29 +76,29 @@ Expected: clone succeeds with equal revision id and mesh metrics; local STL expo
 - Success returns `{ "ok": true, ... }`; failures return `{ "ok": false, "error": <actionable string> }`.
 - `loadProject` returns a validated `document` and geometry entries with `geometryKey`, `revisionId`, `sourceName`, `sourceFormat`, `triangleCount`, and local `assetUrl`.
 
-- [ ] **Step 1: Define the QML-facing contract and create the red project-store test target.**
+- [x] **Step 1: Define the QML-facing contract and create the red project-store test target.**
 
 Declare the `NativeProjectStore` API in its header, create `NativeProjectStoreTests.cpp`, and register `native-project-store-tests` in CMake with the test file and `MeshGeometry` sources. Do not add store method definitions yet.
 
-- [ ] **Step 2: Write failing tests for a round trip and immutable revision reuse.**
+- [x] **Step 2: Write failing tests for a round trip and immutable revision reuse.**
 
 Use a temporary project folder and real `MeshGeometry` STL fixtures. Save two geometry keys with identical mesh content, reload, and assert the ordered scene data survives and both keys refer to one content-addressed asset with the correct format id, schema version 1, units, axis, digest, triangle count, and exact mesh revision id. Also save a valid project, force a later save to fail after staging an asset, and assert the original manifest and assets still load.
 
-- [ ] **Step 3: Run the new focused Qt test and confirm it fails because the project-store methods are undefined.**
+- [x] **Step 3: Run the new focused Qt test and confirm it fails because the project-store methods are undefined.**
 
 Run: `cmake --build apps/native/build-mingw2 --target native-project-store-tests --parallel 4` then `apps/native/build-mingw2/native-project-store-tests.exe`
 
-- [ ] **Step 4: Implement schema-v1 save/load for valid projects.**
+- [x] **Step 4: Implement schema-v1 save/load for valid projects.**
 
 Add `NativeProjectStore` as a QML-registered QObject with `saveProject(folderUrl, scene, geometryRecords)` and `loadProject(folderUrl)`. Store `project.json` and `meshes/<sha256>.stl`. Export unique revisions with `MeshGeometry::exportLocalStl`, hash bytes, atomically publish immutable assets, and commit the complete manifest with `QSaveFile` last. The load result contains the parsed document and validated local asset URLs.
 
-- [ ] **Step 5: Add the implementation to the app target and register the QML type.**
+- [x] **Step 5: Add the implementation to the app target and register the QML type.**
 
-- [ ] **Step 6: Run the round-trip test and confirm valid projects save and reopen.**
+- [x] **Step 6: Run the round-trip test and confirm valid projects save and reopen.**
 
 Expected: manifest metadata, ordered scene rows, geometry maps, exact revision ids, and content-addressed deduplication match the source document.
 
-- [ ] **Step 7: Commit the valid project-store slice.**
+- [x] **Step 7: Commit the valid project-store slice.**
 
 ### Task 3: Reject invalid projects
 
