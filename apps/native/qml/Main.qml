@@ -26,6 +26,11 @@ ApplicationWindow {
     property string pendingImportUrl: ""
     property string pendingSliceRequestId: ""
     property var pendingSliceOptions: ({})
+    property string pendingAutoOrientRequestId: ""
+    property var pendingAutoOrientRetry: null
+    property string autoOrientStatusText: ""
+    property string pendingRepairRequestId: ""
+    property var pendingRepairRetry: null
     property bool restoringInstanceState: false
     property bool wireframeMode: false
     property bool boundsVisible: false
@@ -110,6 +115,185 @@ ApplicationWindow {
         if (lowerPath.endsWith(".stl"))
             return geometry.loadStl(url)
         return false
+    }
+
+    function selectedAutoOrientRow() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return null
+        const row = sceneInstances.get(selectedInstanceIndex)
+        const filename = String(row.name || "").toLowerCase()
+        if (!row.backendModelId || (!filename.endsWith(".stl") && !filename.endsWith(".obj")))
+            return null
+        return row
+    }
+
+    function startAutoOrient() {
+        const row = selectedAutoOrientRow()
+        if (!row || pendingAutoOrientRequestId || pendingAutoOrientRetry)
+            return
+        const requestId = row.instanceId
+        pendingAutoOrientRequestId = requestId
+        autoOrientStatusText = "Sending auto-orient request to the geometry service..."
+        statusLabel.text = autoOrientStatusText
+        geometryCommandClient.autoOrientModel(requestId, row.backendModelId)
+    }
+
+    function retryAutoOrient() {
+        if (!pendingAutoOrientRetry || pendingAutoOrientRequestId)
+            return
+        const row = selectedAutoOrientRow()
+        if (!row || row.backendModelId !== pendingAutoOrientRetry.modelId)
+            return
+        pendingAutoOrientRequestId = pendingAutoOrientRetry.requestId
+        autoOrientStatusText = "Retrying download of the persisted oriented mesh..."
+        statusLabel.text = autoOrientStatusText
+        geometryCommandClient.retryAutoOrientDownload(pendingAutoOrientRetry.requestId)
+    }
+
+    function failAutoOrient(requestId, message) {
+        if (pendingAutoOrientRequestId === requestId)
+            pendingAutoOrientRequestId = ""
+        autoOrientStatusText = `Auto-orient failed: ${message}`
+        statusLabel.text = autoOrientStatusText
+    }
+
+    function autoOrientDownloadFailed(requestId, modelId, message) {
+        if (pendingAutoOrientRequestId === requestId)
+            pendingAutoOrientRequestId = ""
+        pendingAutoOrientRetry = { requestId: requestId, modelId: modelId }
+        autoOrientStatusText = `Auto-orient was saved by the service, but its mesh download failed: ${message} Select a matching instance and retry the download.`
+        statusLabel.text = autoOrientStatusText
+    }
+
+    function completeAutoOrient(requestId, modelId, filename, localFileUrl,
+                                optimalRotationDeg, originalOverhangCm2,
+                                optimizedOverhangCm2, reductionPercentage, message) {
+        if (pendingAutoOrientRequestId === requestId)
+            pendingAutoOrientRequestId = ""
+        pendingAutoOrientRetry = null
+
+        const oriented = createDerivedGeometry()
+        if (!loadSliceGeometry(oriented.geometry, localFileUrl) || !oriented.geometry.loaded) {
+            destroyDerivedGeometry(oriented.key)
+            failAutoOrient(requestId,
+                           "The oriented file was downloaded, but the native viewport could not parse it. The current scene geometry is unchanged.")
+            return
+        }
+
+        let updatedCount = 0
+        for (let i = 0; i < sceneInstances.count; ++i) {
+            if (sceneInstances.get(i).backendModelId === modelId) {
+                sceneInstances.setProperty(i, "geometryKey", oriented.key)
+                updatedCount++
+            }
+        }
+        if (updatedCount === 0) {
+            destroyDerivedGeometry(oriented.key)
+            failAutoOrient(requestId,
+                           `The service oriented ${filename}, but no current scene instance uses its model ID. The scene was left unchanged.`)
+            return
+        }
+
+        if (selectedInstanceIndex >= 0 && selectedInstanceIndex < sceneInstances.count
+                && sceneInstances.get(selectedInstanceIndex).backendModelId === modelId)
+            refreshMeshAnalysis()
+
+        autoOrientStatusText = `Oriented rotation ${optimalRotationDeg.x.toFixed(1)}°, ${optimalRotationDeg.y.toFixed(1)}°, ${optimalRotationDeg.z.toFixed(1)}°. Overhang ${Number(originalOverhangCm2).toFixed(2)} → ${Number(optimizedOverhangCm2).toFixed(2)} cm2 (${Number(reductionPercentage).toFixed(1)}% reduction). ${message}`
+        statusLabel.text = autoOrientStatusText
+    }
+
+    function selectedRepairRow() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return null
+        const row = sceneInstances.get(selectedInstanceIndex)
+        const filename = String(row.name || "").toLowerCase()
+        if (!row.backendModelId || (!filename.endsWith(".stl") && !filename.endsWith(".obj")))
+            return null
+        return row
+    }
+
+    function repairSelectedMesh() {
+        const row = selectedRepairRow()
+        if (row && pendingRepairRequestId)
+            return
+        if (row && pendingRepairRetry) {
+            statusLabel.text = "A persisted service repair is waiting for its mesh download to be retried."
+            return
+        }
+        if (row) {
+            const toleranceMm = repairTolerance.value / 100.0
+            if (toleranceMm < 0.00001 || toleranceMm > 1.0) {
+                statusLabel.text = "Service repair supports weld tolerances from 0.00001 to 1.00 mm."
+                return
+            }
+            pendingRepairRequestId = row.instanceId
+            statusLabel.text = "Sending repair to the geometry service..."
+            geometryCommandClient.repairModel(row.instanceId, row.backendModelId, toleranceMm)
+            return
+        }
+
+        const result = selectedGeometry().repairMesh(repairTolerance.value / 100.0)
+        if (result.error) {
+            statusLabel.text = result.error
+            return
+        }
+        refreshMeshAnalysis()
+        statusLabel.text = `Local repair complete: welded ${result.weldedVertices} vertices, removed ${result.removedTriangles} triangles`
+    }
+
+    function retryRepairDownload() {
+        if (!pendingRepairRetry || pendingRepairRequestId)
+            return
+        const row = selectedRepairRow()
+        if (!row || row.backendModelId !== pendingRepairRetry.modelId) {
+            statusLabel.text = "Select an instance of the repaired model before retrying its download."
+            return
+        }
+        pendingRepairRequestId = pendingRepairRetry.requestId
+        statusLabel.text = "Retrying download of the persisted repaired mesh..."
+        geometryCommandClient.retryRepairDownload(pendingRepairRetry.requestId)
+    }
+
+    function failRepair(requestId, message) {
+        if (pendingRepairRequestId === requestId)
+            pendingRepairRequestId = ""
+        pendingRepairRetry = null
+        statusLabel.text = `Service repair failed: ${message}`
+    }
+
+    function repairDownloadFailed(requestId, modelId, message) {
+        if (pendingRepairRequestId === requestId)
+            pendingRepairRequestId = ""
+        pendingRepairRetry = { requestId: requestId, modelId: modelId }
+        statusLabel.text = `Repair was saved by the service, but its mesh download failed: ${message} Select a matching instance and use Retry Repair Download.`
+    }
+
+    function completeRepair(requestId, modelId, filename, localFileUrl, report, message) {
+        if (pendingRepairRequestId === requestId)
+            pendingRepairRequestId = ""
+        pendingRepairRetry = null
+        const repaired = createDerivedGeometry()
+        if (!loadSliceGeometry(repaired.geometry, localFileUrl) || !repaired.geometry.loaded) {
+            destroyDerivedGeometry(repaired.key)
+            statusLabel.text = "The repaired file was downloaded, but the native viewport could not parse it. The current scene is unchanged."
+            return
+        }
+        let updatedCount = 0
+        for (let i = 0; i < sceneInstances.count; ++i) {
+            if (sceneInstances.get(i).backendModelId === modelId) {
+                sceneInstances.setProperty(i, "geometryKey", repaired.key)
+                updatedCount++
+            }
+        }
+        if (updatedCount === 0) {
+            destroyDerivedGeometry(repaired.key)
+            statusLabel.text = `The service repaired ${filename}, but no scene instance still uses that model ID. The scene is unchanged.`
+            return
+        }
+        if (selectedInstanceIndex >= 0 && selectedInstanceIndex < sceneInstances.count
+                && sceneInstances.get(selectedInstanceIndex).backendModelId === modelId)
+            refreshMeshAnalysis()
+        statusLabel.text = `Repair report: ${report.holes_filled} holes filled, ${report.degenerate_faces_removed} degenerate faces removed, ${report.duplicate_vertices_welded} vertices welded, normals corrected: ${report.inverted_normals_fixed ? "yes" : "no"}. Watertight: ${report.is_watertight_before ? "yes" : "no"} before, ${report.is_watertight_after ? "yes" : "no"} after. Triangles: ${report.triangle_count_before} to ${report.triangle_count_after}. ${message}`
     }
 
     function clearPendingSlice(requestId) {
@@ -197,7 +381,7 @@ ApplicationWindow {
     }
 
     Connections {
-        target: sliceCommandClient
+        target: geometryCommandClient
 
         function onSourceRegistered(sourceUrl, projectId, modelId) {
             const sourceKey = sourceUrl.toString()
@@ -235,16 +419,33 @@ ApplicationWindow {
         function onSliceFailed(requestId, message, topModelId, bottomModelId) {
             failServiceSlice(requestId, message, topModelId, bottomModelId)
         }
-    }
 
-    function repairSelectedMesh() {
-        const result = selectedGeometry().repairMesh(repairTolerance.value / 100.0)
-        if (result.error) {
-            statusLabel.text = result.error
-            return
+        function onAutoOrientCompleted(requestId, modelId, filename, localFileUrl,
+                                        optimalRotationDeg, originalOverhangCm2,
+                                        optimizedOverhangCm2, reductionPercentage, message) {
+            completeAutoOrient(requestId, modelId, filename, localFileUrl, optimalRotationDeg,
+                               originalOverhangCm2, optimizedOverhangCm2, reductionPercentage, message)
         }
-        refreshMeshAnalysis()
-        statusLabel.text = `Repair complete: welded ${result.weldedVertices} vertices, removed ${result.removedTriangles} triangles`
+
+        function onAutoOrientFailed(requestId, message) {
+            failAutoOrient(requestId, message)
+        }
+
+        function onAutoOrientDownloadFailed(requestId, modelId, message) {
+            window.autoOrientDownloadFailed(requestId, modelId, message)
+        }
+
+        function onRepairCompleted(requestId, modelId, filename, localFileUrl, report, message) {
+            completeRepair(requestId, modelId, filename, localFileUrl, report, message)
+        }
+
+        function onRepairFailed(requestId, message) {
+            failRepair(requestId, message)
+        }
+
+        function onRepairDownloadFailed(requestId, modelId, message) {
+            repairDownloadFailed(requestId, modelId, message)
+        }
     }
 
     function applyPlaneSlice() {
@@ -280,7 +481,7 @@ ApplicationWindow {
         pendingSliceOptions = updatedOptions
         pendingSliceRequestId = requestId
         sliceStatus.text = "Sending slice to geometry service..."
-        sliceCommandClient.sliceModel(requestId, sourceRow.backendModelId, point, normal,
+        geometryCommandClient.sliceModel(requestId, sourceRow.backendModelId, point, normal,
                                       sliceKeepSide.currentIndex !== 0, activeModel.sceneTransform)
     }
 
@@ -346,6 +547,29 @@ ApplicationWindow {
                 color: "#79dec2"
                 font.pixelSize: 10
                 font.family: "monospace"
+            }
+            Button {
+                text: pendingAutoOrientRequestId !== "" ? "Orienting..." : "Auto Orient"
+                enabled: window.selectedAutoOrientRow() !== null
+                    && window.pendingAutoOrientRequestId === ""
+                    && window.pendingAutoOrientRetry === null
+                onClicked: window.startAutoOrient()
+                ToolTip.visible: hovered
+                ToolTip.text: "Orient registered STL or OBJ geometry through the geometry service. The downloaded mesh includes the baked rotation."
+                background: Rectangle { color: parent.enabled ? "#79dec2" : "#343d38"; border.color: "#a2f0d9"; radius: 4 }
+                contentItem: Text { text: parent.text; color: parent.enabled ? "#101512" : "#8b968c"; font.pixelSize: 10; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+            }
+            Button {
+                text: pendingAutoOrientRequestId !== "" ? "Downloading..." : "Retry Orient Download"
+                visible: pendingAutoOrientRetry !== null
+                    && window.selectedAutoOrientRow() !== null
+                    && window.selectedAutoOrientRow().backendModelId === pendingAutoOrientRetry.modelId
+                enabled: visible && window.pendingAutoOrientRequestId === ""
+                onClicked: window.retryAutoOrient()
+                ToolTip.visible: hovered
+                ToolTip.text: "Retry the GET for the already persisted oriented mesh. The orientation request will not be repeated."
+                background: Rectangle { color: parent.enabled ? "#202723" : "#343d38"; border.color: "#e57b3e"; radius: 4 }
+                contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#8b968c"; font.pixelSize: 9; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
             Button {
                 text: "Import Model"
@@ -631,6 +855,14 @@ ApplicationWindow {
                                 onClicked: repairSelectedMesh()
                                 contentItem: Text { text: parent.text; color: "#161c18"; font.pixelSize: 10; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                                 background: Rectangle { color: "#79dec2"; border.color: "#a2f0d9"; radius: 3 }
+                            }
+                            Button {
+                                visible: pendingRepairRetry !== null
+                                text: "Retry Repair Download"
+                                Layout.fillWidth: true
+                                onClicked: retryRepairDownload()
+                                contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 9; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                background: Rectangle { color: "#202723"; border.color: "#d57d3d"; radius: 3 }
                             }
                         }
                         RowLayout {
@@ -1211,6 +1443,13 @@ ApplicationWindow {
                         onTriggered: repairSelectedMesh()
                     }
                     MenuItem {
+                        text: "Auto-orient registered STL / OBJ"
+                        enabled: window.selectedAutoOrientRow() !== null
+                            && window.pendingAutoOrientRequestId === ""
+                            && window.pendingAutoOrientRetry === null
+                        onTriggered: window.startAutoOrient()
+                    }
+                    MenuItem {
                         text: "Slice by free plane..."
                         onTriggered: {
                             const geometry = window.selectedGeometry()
@@ -1744,8 +1983,8 @@ ApplicationWindow {
                 anchors.left: parent.left
                 anchors.bottom: parent.bottom
                 anchors.margins: 14
-                width: 292
-                height: 54
+                width: Math.min(500, parent.width * 0.55)
+                height: Math.max(54, statusLabel.implicitHeight + 34)
                 radius: 3
                 color: "#141817"
                 border.color: "#39433c"
@@ -1754,14 +1993,27 @@ ApplicationWindow {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.leftMargin: 12
+                    anchors.right: parent.right
+                    anchors.rightMargin: 12
                     spacing: 3
-                    Label { id: statusLabel; text: "Move All | Drag: apply tool  |  Alt: rotate  |  Ctrl: scale  |  Middle: pan"; color: "#e5e2da"; font.pixelSize: 10 }
                     Label {
+                        id: statusLabel
+                        width: parent.width
+                        text: "Move All | Drag: apply tool  |  Alt: rotate  |  Ctrl: scale  |  Middle: pan"
+                        color: "#e5e2da"
+                        font.pixelSize: 10
+                        wrapMode: Text.WordWrap
+                        maximumLineCount: 3
+                    }
+                    Label {
+                        width: parent.width
                         text: importedGeometry.loaded
                             ? `${window.selectedWorldDimensions().z.toFixed(1)} mm world height`
                             : "STL / OBJ / 3MF import"
                         color: "#aa9c89"
                         font.pixelSize: 9
+                        wrapMode: Text.WordWrap
+                        maximumLineCount: 1
                     }
                 }
             }
@@ -2086,7 +2338,7 @@ ApplicationWindow {
             return
         if (path.endsWith(".stl") || path.endsWith(".obj")) {
             statusLabel.text = "Imported locally. Registering source with geometry service..."
-            sliceCommandClient.registerSource(url, importedGeometry.fileName)
+            geometryCommandClient.registerSource(url, importedGeometry.fileName)
         } else {
             statusLabel.text = "3MF loaded locally. Service-backed slicing supports STL and OBJ."
         }

@@ -17,8 +17,14 @@ Outlaw Forge is checked in separate layers because a backend test, static fronte
 | Native Qt build | `cmake --build <build-dir> --target outlaw-forge-native` | No |
 | Native Qt tests | `ctest --test-dir <build-dir> --output-on-failure` | No |
 | Native live slice | Import STL/OBJ and slice in `apps/native/` | Yes |
+| Native live auto-orient | Import/register STL/OBJ, orient, inspect shared instances, and exercise GET-only retry in `apps/native/` | Yes |
+| Native live repair | Import/register STL/OBJ, repair within the 1.0 mm service tolerance limit, inspect report/shared instances, and exercise GET-only retry in `apps/native/` | Yes |
 
 Configure the native target with Qt 6.6+, CMake 3.21+, and a C++20 toolchain. See [the native README](../apps/native/README.md) for configuration and launch commands. Native command tests use a local HTTP stub; they do not prove that the live API is running or that a particular customer mesh will produce a watertight cut.
+
+Native auto-orient client tests use a local HTTP stub to check the exact POST route and empty JSON payload, response validation, returned metrics and file bytes, API errors, empty downloads, and GET-only retry without a duplicate POST. These checks do not prove a live FastAPI operation. Live acceptance should confirm the working-model ID remains stable, the upload remains unchanged, all scene instances sharing that ID receive the baked mesh while retaining their transforms and visibility, and 3MF or unregistered models remain ineligible.
+
+Native service repair live acceptance should verify its project-scoped payload and response against the running API, confirm the working-model ID stays stable and the source upload is unchanged, and check that every scene instance sharing the model ID receives the parsed derived mesh while retaining its transforms and visibility. Exercise API failure, malformed returned mesh, a tolerance over 1.0 mm, unregistered/3MF local fallback, and GET-only recovery after a persisted result download fails. Confirm the UI reports the returned watertightness measurement without promising closure. This feature has not been live-service accepted by a local stub or build alone.
 
 The repository PowerShell orchestrator combines the primary web and backend checks:
 
@@ -44,6 +50,7 @@ Run layers independently when a combined process times out. This distinguishes a
 - The workflow rail reflects model presence, watertightness, build-volume fit, auto-orientation history, and export history. This UI state is separate from the backend and desktop lifecycle verification layers listed above.
 - The native slice request maps the active instance transform into source coordinates and keeps the original scene geometry on service/download failure.
 - Native slice status reports `is_watertight` separately for both API results. Capping is requested, but the native client does not heal an open result.
+- Native auto-orient displays service metrics for the returned mesh, does not apply the optimal rotation a second time, and offers download-only recovery after a persisted operation.
 - User-visible workbench copy contains no em dash or separator en dash characters.
 
 ## Release checks
