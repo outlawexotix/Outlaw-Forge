@@ -40,7 +40,7 @@ The selected worktree contains local STL/OBJ/limited 3MF loading, scene transfor
 
 1. Lock down plane-cut outputs and closure reporting, then add a local STL export path so results can be retained. The STL export path is implemented with transform baking; real-model closure still requires in-app reproduction of the reported cut.
 2. Add disconnected-component splitting and deterministic mesh simplification.
-3. Add mesh booleans after confirming a suitable offline geometry kernel meets Windows build, deterministic-output, and license constraints.
+3. Add mesh booleans after confirming a suitable offline geometry kernel meets Windows build, deterministic-output, and license constraints. Implemented with pinned Manifold 3.5.1: the Edit menu exposes Union, Difference, and Intersection, evaluates current instance transforms in millimetres, and commits a new derived mesh only after a valid, non-empty result. Inputs must be closed manifold solids and support up to 5,000,000 triangles each. The active input becomes the result; the other operand instances are consumed only after success, while unrelated scene objects remain unchanged.
 4. Add bed-aware 2D arrangement with configurable bed dimensions and spacing.
 5. Add versioned local project save/reopen that preserves the scene and derived geometry.
 
@@ -56,6 +56,6 @@ Each step is a separate reviewable slice. Keep imported geometry immutable; writ
 - Saved projects reopen with the same geometry and instance transforms; STL exports can be re-imported with matching dimensions and triangle geometry within the format's numeric precision.
 - Existing Tauri/API behavior remains outside this change.
 
-## Open implementation constraint
+## Implementation constraints
 
-The current native code stores triangle soup. Boolean robustness and project container format need a short feasibility check before their implementation slice; this design does not pre-approve a new third-party dependency or a format that loses scene data.
+The native code stores triangle soup. The Boolean adapter reconstructs position-indexed solid inputs, rejects inputs Manifold cannot validate as closed manifold solids, and keeps the scene unchanged when evaluation fails or returns no triangles. The pinned kernel source is fetched and hash-verified at configure time; the compiled application has no runtime network dependency. The local project container format preserves scene data as described in implementation step 5.

@@ -10,6 +10,35 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 6.6 REQUIRED COMPONENTS Quick Quick3D QuickControls2 CorePrivate)
 
+# The native mesh Boolean phase uses a pinned, offline-at-runtime solid kernel.
+# FetchContent verifies the archive so clean builds cannot silently drift.
+include(FetchContent)
+set(_OUTLAW_PREVIOUS_BUILD_SHARED_LIBS "${BUILD_SHARED_LIBS}")
+set(BUILD_SHARED_LIBS OFF)
+set(MANIFOLD_TEST OFF)
+set(MANIFOLD_CBIND OFF)
+set(MANIFOLD_DOWNLOADS OFF)
+set(MANIFOLD_PAR OFF)
+set(MANIFOLD_NO_IOSTREAM ON)
+set(MANIFOLD_CROSS_SECTION OFF)
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+FetchContent_Declare(manifold
+    URL https://github.com/elalish/manifold/archive/refs/tags/v3.5.1.tar.gz
+    URL_HASH SHA256=1B42F28D7C1C6D07DF7244CA22CB7D82DE980899001969C9985C2662A77EB43C
+)
+FetchContent_MakeAvailable(manifold)
+set_property(TARGET manifold PROPERTY AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+set(BUILD_SHARED_LIBS "${_OUTLAW_PREVIOUS_BUILD_SHARED_LIBS}")
+unset(_OUTLAW_PREVIOUS_BUILD_SHARED_LIBS)
+unset(MANIFOLD_TEST)
+unset(MANIFOLD_CBIND)
+unset(MANIFOLD_DOWNLOADS)
+unset(MANIFOLD_PAR)
+unset(MANIFOLD_NO_IOSTREAM)
+unset(MANIFOLD_CROSS_SECTION)
+
 qt_standard_project_setup(REQUIRES 6.6)
 
 qt_add_executable(outlaw-forge-native
@@ -42,6 +71,7 @@ target_link_libraries(outlaw-forge-native PRIVATE
     Qt6::Quick3D
     Qt6::QuickControls2
     Qt6::CorePrivate
+    manifold
 )
 
 target_include_directories(outlaw-forge-native PRIVATE src/third_party)
@@ -62,6 +92,7 @@ if(BUILD_TESTING)
         Qt6::Quick3D
         Qt6::CorePrivate
         Qt6::Test
+        manifold
     )
     add_test(NAME native-mesh-slice-tests
         COMMAND ${CMAKE_COMMAND} -E env
@@ -85,6 +116,7 @@ if(BUILD_TESTING)
         Qt6::Quick3D
         Qt6::CorePrivate
         Qt6::Test
+        manifold
     )
     add_test(NAME native-project-store-tests
         COMMAND ${CMAKE_COMMAND} -E env

@@ -38,6 +38,14 @@ public:
     Q_INVOKABLE int connectedComponentCount() const;
     Q_INVOKABLE QVariantMap splitConnectedComponents(const QVariantList &outputs) const;
     Q_INVOKABLE QVariantMap simplifyMesh(double targetReductionPercent, MeshGeometry *output) const;
+    Q_INVOKABLE QVariantMap booleanMesh(const MeshGeometry *second, const QString &operation,
+                                        MeshGeometry *output,
+                                        const QVector3D &firstOffsetMm,
+                                        const QVector3D &firstRotationDeg,
+                                        const QVector3D &firstScale,
+                                        const QVector3D &secondOffsetMm,
+                                        const QVector3D &secondRotationDeg,
+                                        const QVector3D &secondScale) const;
     Q_INVOKABLE QVector3D instanceOffsetCorrection(const MeshGeometry *derivedGeometry,
                                                    const QVector3D &instanceScale,
                                                    const QVector3D &instanceRotationDeg) const;
