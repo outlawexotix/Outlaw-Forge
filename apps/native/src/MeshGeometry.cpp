@@ -20,8 +20,12 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <exception>
 #include <limits>
+#include <map>
+#include <tuple>
 #include <mapbox/earcut.hpp>
+#include <manifold/manifold.h>
 #include <vector>
 
 namespace {
@@ -52,6 +56,90 @@ struct GridCellKey {
 size_t qHash(const GridCellKey &key, size_t seed = 0) noexcept
 {
     return qHashMulti(seed, key.x, key.y, key.z);
+}
+
+manifold::MeshGL64 manifoldMesh(const QVector<QVector3D> &points,
+                                const QVector3D &center,
+                                const QVector3D &offset,
+                                const QVector3D &rotationDeg,
+                                const QVector3D &scale)
+{
+    manifold::MeshGL64 mesh;
+    QQuaternion rotation = QQuaternion::fromEulerAngles(rotationDeg).normalized();
+    const QVector3D pivot(center.x(), center.y(), center.z());
+    std::map<std::tuple<quint32, quint32, quint32>, uint64_t> vertexIndices;
+    mesh.triVerts.reserve(size_t(points.size()));
+    mesh.vertProperties.reserve(size_t(points.size()));
+    for (qsizetype triangle = 0; triangle + 2 < points.size(); triangle += 3) {
+        for (int corner = 0; corner < 3; ++corner) {
+            const QVector3D local = points[triangle + corner] - pivot;
+            QVector3D world(local.x() * scale.x(), local.y() * scale.y(), local.z() * scale.z());
+            world = rotation.rotatedVector(world) + pivot + offset;
+            const float x = world.x() == 0.0f ? 0.0f : world.x();
+            const float y = world.y() == 0.0f ? 0.0f : world.y();
+            const float z = world.z() == 0.0f ? 0.0f : world.z();
+            const auto key = std::make_tuple(std::bit_cast<quint32>(x),
+                                             std::bit_cast<quint32>(y),
+                                             std::bit_cast<quint32>(z));
+            auto it = vertexIndices.find(key);
+            if (it == vertexIndices.end()) {
+                const uint64_t index = uint64_t(mesh.vertProperties.size() / 3);
+                mesh.vertProperties.insert(mesh.vertProperties.end(), {double(x), double(y), double(z)});
+                it = vertexIndices.emplace(key, index).first;
+            }
+            // Negative scale has negative determinant and reverses the shell.
+            const int orderedCorner = scale.x() * scale.y() * scale.z() < 0.0f
+                ? (corner == 1 ? 2 : (corner == 2 ? 1 : 0)) : corner;
+            if (orderedCorner == corner)
+                mesh.triVerts.push_back(it->second);
+            else {
+                const QVector3D otherLocal = points[triangle + orderedCorner] - pivot;
+                QVector3D other(otherLocal.x() * scale.x(), otherLocal.y() * scale.y(), otherLocal.z() * scale.z());
+                other = rotation.rotatedVector(other) + pivot + offset;
+                const auto otherKey = std::make_tuple(
+                    std::bit_cast<quint32>(other.x() == 0.0f ? 0.0f : other.x()),
+                    std::bit_cast<quint32>(other.y() == 0.0f ? 0.0f : other.y()),
+                    std::bit_cast<quint32>(other.z() == 0.0f ? 0.0f : other.z()));
+                mesh.triVerts.push_back(vertexIndices.at(otherKey));
+            }
+        }
+    }
+    return mesh;
+}
+
+QVector<QVector3D> trianglePoints(const manifold::MeshGL64 &mesh)
+{
+    QVector<QVector3D> points;
+    points.reserve(qsizetype(mesh.triVerts.size()));
+    for (uint64_t index : mesh.triVerts) {
+        const size_t offset = size_t(index) * size_t(mesh.numProp);
+        points.append(QVector3D(float(mesh.vertProperties[offset]),
+                                float(mesh.vertProperties[offset + 1]),
+                                float(mesh.vertProperties[offset + 2])));
+    }
+    return points;
+}
+
+QString manifoldErrorDescription(manifold::Manifold::Error error)
+{
+    switch (error) {
+    case manifold::Manifold::Error::NoError: return QStringLiteral("No error");
+    case manifold::Manifold::Error::NonFiniteVertex: return QStringLiteral("non-finite vertex");
+    case manifold::Manifold::Error::NotManifold: return QStringLiteral("mesh is not a closed manifold solid");
+    case manifold::Manifold::Error::VertexOutOfBounds: return QStringLiteral("vertex index is out of bounds");
+    case manifold::Manifold::Error::PropertiesWrongLength: return QStringLiteral("vertex properties have an invalid length");
+    case manifold::Manifold::Error::MissingPositionProperties: return QStringLiteral("mesh position data is missing");
+    case manifold::Manifold::Error::MergeVectorsDifferentLengths: return QStringLiteral("mesh merge data is invalid");
+    case manifold::Manifold::Error::MergeIndexOutOfBounds: return QStringLiteral("mesh merge index is out of bounds");
+    case manifold::Manifold::Error::TransformWrongLength: return QStringLiteral("mesh transform is invalid");
+    case manifold::Manifold::Error::RunIndexWrongLength: return QStringLiteral("mesh run data is invalid");
+    case manifold::Manifold::Error::FaceIDWrongLength: return QStringLiteral("mesh face data is invalid");
+    case manifold::Manifold::Error::InvalidConstruction: return QStringLiteral("solid construction failed");
+    case manifold::Manifold::Error::ResultTooLarge: return QStringLiteral("result exceeds the geometry limit");
+    case manifold::Manifold::Error::InvalidTangents: return QStringLiteral("mesh tangent data is invalid");
+    case manifold::Manifold::Error::Cancelled: return QStringLiteral("operation was cancelled");
+    }
+    return QStringLiteral("unknown geometry error");
 }
 
 float littleFloat(const uchar *bytes)
@@ -951,9 +1039,9 @@ QVariantMap MeshGeometry::simplifyMesh(double targetReductionPercent, MeshGeomet
         return {{QStringLiteral("error"), QStringLiteral("Simplification needs a separate output geometry.")}};
     if (!std::isfinite(targetReductionPercent) || targetReductionPercent < 1.0 || targetReductionPercent > 95.0)
         return {{QStringLiteral("error"), QStringLiteral("Target reduction must be between 1 and 95 percent.")}};
-    constexpr qsizetype maximumSimplificationTriangles = 1000000;
+    constexpr qsizetype maximumSimplificationTriangles = 5000000;
     if (triangleCount() > maximumSimplificationTriangles)
-        return {{QStringLiteral("error"), QStringLiteral("Local simplification supports meshes up to 1,000,000 triangles to stay within the native memory budget.")}};
+        return {{QStringLiteral("error"), QStringLiteral("Local simplification supports meshes up to 5,000,000 triangles to stay within the native memory budget.")}};
 
     QVector3D minimum = m_trianglePoints.front();
     QVector3D maximum = minimum;
@@ -999,7 +1087,7 @@ QVariantMap MeshGeometry::simplifyMesh(double targetReductionPercent, MeshGeomet
     // large files. Vertex clustering is deterministic for a fixed cell size;
     // keep the nearest candidate found because the target is not a topology
     // guarantee.
-    constexpr qsizetype maximumCandidateTriangleVisits = 2000000;
+    constexpr qsizetype maximumCandidateTriangleVisits = 20000000;
     const int searchIterations = int(std::max<qsizetype>(1, std::min<qsizetype>(14,
         maximumCandidateTriangleVisits / sourceTriangles)));
     for (int iteration = 0; iteration < searchIterations; ++iteration) {
@@ -1033,6 +1121,76 @@ QVariantMap MeshGeometry::simplifyMesh(double targetReductionPercent, MeshGeomet
     result.insert(QStringLiteral("searchIterations"), searchIterations);
     result.insert(QStringLiteral("revisionId"), output->revisionId());
     return result;
+}
+
+QVariantMap MeshGeometry::booleanMesh(const MeshGeometry *second, const QString &operation,
+                                      MeshGeometry *output,
+                                      const QVector3D &firstOffsetMm,
+                                      const QVector3D &firstRotationDeg,
+                                      const QVector3D &firstScale,
+                                      const QVector3D &secondOffsetMm,
+                                      const QVector3D &secondRotationDeg,
+                                      const QVector3D &secondScale) const
+{
+    if (!m_loaded || m_trianglePoints.isEmpty())
+        return {{QStringLiteral("error"), QStringLiteral("Choose the first mesh before running a Boolean operation.")}};
+    if (!second || !second->m_loaded || second->m_trianglePoints.isEmpty())
+        return {{QStringLiteral("error"), QStringLiteral("Choose a second loaded mesh before running a Boolean operation.")}};
+    if (!output || output == this || output == second)
+        return {{QStringLiteral("error"), QStringLiteral("Could not create a separate result mesh.")}};
+    constexpr qsizetype maximumBooleanTrianglesPerInput = 5000000;
+    if (m_trianglePoints.size() / 3 > maximumBooleanTrianglesPerInput
+        || second->m_trianglePoints.size() / 3 > maximumBooleanTrianglesPerInput)
+        return {{QStringLiteral("error"), QStringLiteral("Boolean operations support up to 5,000,000 triangles per input mesh.")}};
+
+    manifold::OpType operationType;
+    if (operation.compare(QStringLiteral("union"), Qt::CaseInsensitive) == 0)
+        operationType = manifold::OpType::Add;
+    else if (operation.compare(QStringLiteral("difference"), Qt::CaseInsensitive) == 0)
+        operationType = manifold::OpType::Subtract;
+    else if (operation.compare(QStringLiteral("intersection"), Qt::CaseInsensitive) == 0)
+        operationType = manifold::OpType::Intersect;
+    else
+        return {{QStringLiteral("error"), QStringLiteral("Choose Union, Difference, or Intersection.")}};
+
+    if (!finite(firstOffsetMm) || !finite(firstRotationDeg) || !finite(firstScale)
+        || !finite(secondOffsetMm) || !finite(secondRotationDeg) || !finite(secondScale)
+        || qFuzzyIsNull(firstScale.x()) || qFuzzyIsNull(firstScale.y()) || qFuzzyIsNull(firstScale.z())
+        || qFuzzyIsNull(secondScale.x()) || qFuzzyIsNull(secondScale.y()) || qFuzzyIsNull(secondScale.z()))
+        return {{QStringLiteral("error"), QStringLiteral("Both objects need finite transforms and non-zero scale on every axis.")}};
+
+    try {
+        const QVector3D firstPivot(m_center.x(), m_center.y(), m_center.z() - m_dimensions.z() * 0.5f);
+        const QVector3D secondPivot(second->m_center.x(), second->m_center.y(),
+                                    second->m_center.z() - second->m_dimensions.z() * 0.5f);
+        const manifold::Manifold firstSolid(manifoldMesh(m_trianglePoints, firstPivot,
+                                                         firstOffsetMm, firstRotationDeg, firstScale));
+        if (firstSolid.Status() != manifold::Manifold::Error::NoError)
+            return {{QStringLiteral("error"), QStringLiteral("The selected mesh cannot form a closed solid: %1").arg(manifoldErrorDescription(firstSolid.Status()))}};
+
+        const manifold::Manifold secondSolid(manifoldMesh(second->m_trianglePoints, secondPivot,
+                                                          secondOffsetMm, secondRotationDeg, secondScale));
+        if (secondSolid.Status() != manifold::Manifold::Error::NoError)
+            return {{QStringLiteral("error"), QStringLiteral("The second mesh cannot form a closed solid: %1").arg(manifoldErrorDescription(secondSolid.Status()))}};
+
+        const manifold::Manifold result = firstSolid.Boolean(secondSolid, operationType);
+        const manifold::Manifold::Error resultStatus = result.Status();
+        if (resultStatus != manifold::Manifold::Error::NoError)
+            return {{QStringLiteral("error"), QStringLiteral("Boolean operation failed: %1").arg(manifoldErrorDescription(resultStatus))}};
+
+        const manifold::MeshGL64 resultMesh = result.GetMeshGL64();
+        QVector<QVector3D> resultPoints = trianglePoints(resultMesh);
+        if (resultPoints.isEmpty())
+            return {{QStringLiteral("error"), QStringLiteral("The operation produced an empty result. The scene was left unchanged.")}};
+        if (!output->setTrianglePoints(resultPoints, m_fileName,
+                                       QStringLiteral("%1 result mesh").arg(operation.toLower())))
+            return {{QStringLiteral("error"), QStringLiteral("Could not create the Boolean result mesh.")}};
+        return {{QStringLiteral("triangles"), resultPoints.size() / 3},
+                {QStringLiteral("operation"), operation.toLower()},
+                {QStringLiteral("units"), QStringLiteral("mm")}};
+    } catch (const std::exception &exception) {
+        return {{QStringLiteral("error"), QStringLiteral("Boolean operation failed: %1").arg(QString::fromUtf8(exception.what()))}};
+    }
 }
 
 QVector3D MeshGeometry::instanceOffsetCorrection(const MeshGeometry *derivedGeometry,

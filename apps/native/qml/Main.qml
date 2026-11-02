@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Effects
 import QtQuick3D
 import QtQuick.Dialogs
 import OutlawForge.NativeTypes 1.0
@@ -12,17 +13,24 @@ ApplicationWindow {
     minimumWidth: 1100
     minimumHeight: 720
     visible: true
+    visibility: Window.Maximized
     title: "Outlaw Forge - Native Viewport"
-    color: "#0e1112"
+    color: "#566372"
     property bool modelSelected: false
     property bool modelVisible: true
     property bool scenePanelVisible: true
     property bool gridVisible: true
+    property real buildPlateWidthMm: 220
+    property real buildPlateDepthMm: 220
     property vector3d modelOffset: Qt.vector3d(0, 0, 0)
     property vector3d modelRotation: Qt.vector3d(0, 0, 0)
     property vector3d modelScale: Qt.vector3d(1, 1, 1)
     property int selectedInstanceIndex: -1
+    property var selectedInstanceIds: []
+    property string selectionAnchorId: ""
     property var derivedGeometries: ({})
+    property var booleanOperandOptions: []
+    property bool booleanUsesMultiSelection: false
     property string projectDirectory: ""
     property bool projectDirty: false
     property int nextGeometryId: 1
@@ -33,6 +41,8 @@ ApplicationWindow {
     property string pendingProjectParent: ""
     property string pendingProjectAction: ""
     property url pendingProjectImportUrl
+    property bool pendingProjectDiscardChanges: false
+    property string projectSaveError: ""
     property bool wireframeMode: false
     property bool boundsVisible: false
     property bool normalsVisible: false
@@ -56,6 +66,10 @@ ApplicationWindow {
         meshAnalysis = selectedGeometry().analyzeMesh()
     }
 
+    function viewportHorizontalOffset() {
+        return scenePanelVisible ? -scenePanel.width * 0.125 : 0
+    }
+
     function recordMeasurementPoint(point) {
         if (measurementStart === null || measurementEnd !== null) {
             measurementStart = point
@@ -76,39 +90,184 @@ ApplicationWindow {
         statusLabel.text = measurementMode ? "Measure: select a first point on the model." : "Measurement cleared"
     }
 
+    function arrangeInstances(selectedOnly, bedWidth, bedDepth, spacingMm) {
+        const margin = 2.0
+        if (!Number.isFinite(bedWidth) || !Number.isFinite(bedDepth)
+                || !Number.isFinite(spacingMm) || bedWidth <= margin * 2
+                || bedDepth <= margin * 2 || spacingMm < 0) {
+            statusLabel.text = "Arrangement needs positive bed dimensions and non-negative spacing"
+            return false
+        }
+
+        const items = []
+        for (let i = 0; i < sceneInstances.count; ++i) {
+            const row = sceneInstances.get(i)
+            if (!row.instanceVisible || (selectedOnly && !isInstanceSelected(i)))
+                continue
+            const bounds = instanceWorldBounds(i)
+            if (!bounds) {
+                statusLabel.text = `Arrangement stopped: could not measure ${row.name}`
+                return false
+            }
+            const width = bounds.maxX - bounds.minX
+            const depth = bounds.maxY - bounds.minY
+            if (width > bedWidth - margin * 2 || depth > bedDepth - margin * 2) {
+                statusLabel.text = `Arrangement stopped: ${row.name} exceeds the ${bedWidth} x ${bedDepth} mm build plate`
+                return false
+            }
+            items.push({ index: i, name: row.name, bounds: bounds, width: width, depth: depth })
+        }
+        if (items.length === 0) {
+            statusLabel.text = selectedOnly ? "Select a visible object to arrange" : "No visible objects to arrange"
+            return false
+        }
+
+        const placements = []
+        if (selectedOnly) {
+            let minX = Number.POSITIVE_INFINITY
+            let minY = Number.POSITIVE_INFINITY
+            let maxX = Number.NEGATIVE_INFINITY
+            let maxY = Number.NEGATIVE_INFINITY
+            for (const item of items) {
+                minX = Math.min(minX, item.bounds.minX)
+                minY = Math.min(minY, item.bounds.minY)
+                maxX = Math.max(maxX, item.bounds.maxX)
+                maxY = Math.max(maxY, item.bounds.maxY)
+            }
+            const shiftX = -(minX + maxX) * 0.5
+            const shiftY = -(minY + maxY) * 0.5
+            for (const item of items)
+                placements.push({ index: item.index, x: shiftX, y: shiftY })
+        } else {
+            // Stable, largest-first shelf packing reduces wasted bed area while
+            // keeping every model's current orientation unchanged.
+            items.sort((a, b) => (b.depth - a.depth) || (b.width - a.width) || (a.index - b.index))
+            const minX = -bedWidth * 0.5 + margin
+            const maxX = bedWidth * 0.5 - margin
+            const minY = -bedDepth * 0.5 + margin
+            const maxY = bedDepth * 0.5 - margin
+            let cursorX = minX
+            let cursorY = minY
+            let shelfDepth = 0
+            for (const item of items) {
+                if (cursorX + item.width > maxX + 0.000001) {
+                    cursorX = minX
+                    cursorY += shelfDepth + spacingMm
+                    shelfDepth = 0
+                }
+                if (cursorY + item.depth > maxY + 0.000001) {
+                    statusLabel.text = `Arrangement stopped: visible objects do not fit on the ${bedWidth} x ${bedDepth} mm build plate`
+                    return false
+                }
+                placements.push({ index: item.index,
+                    x: cursorX + item.width * 0.5 - (item.bounds.minX + item.bounds.maxX) * 0.5,
+                    y: cursorY + item.depth * 0.5 - (item.bounds.minY + item.bounds.maxY) * 0.5 })
+                cursorX += item.width + spacingMm
+                shelfDepth = Math.max(shelfDepth, item.depth)
+            }
+        }
+
+        // Apply only after every item has a valid destination. Keeping this
+        // commit in one guarded block makes failed arrangements non-mutating.
+        restoringInstanceState = true
+        for (const placement of placements) {
+            const row = sceneInstances.get(placement.index)
+            sceneInstances.setProperty(placement.index, "offsetX", row.offsetX + placement.x)
+            sceneInstances.setProperty(placement.index, "offsetY", row.offsetY + placement.y)
+        }
+        restoringInstanceState = false
+        if (selectedInstanceIndex >= 0 && selectedInstanceIndex < sceneInstances.count)
+            activateInstanceIndex(selectedInstanceIndex)
+        buildPlateWidthMm = bedWidth
+        buildPlateDepthMm = bedDepth
+        markProjectDirty()
+        statusLabel.text = selectedOnly
+            ? "Centered selected object on the build plate"
+            : `Arranged ${placements.length} visible objects with ${spacingMm} mm spacing`
+        return true
+    }
+
     function clearScene() {
         while (sceneInstances.count > 0) {
-            selectedInstanceIndex = sceneInstances.count - 1
+            setInstanceSelected(sceneInstances.count - 1)
             removeSelectedInstance()
         }
         statusLabel.text = "Scene cleared"
         markProjectDirty()
     }
 
+    function hasProjectState() {
+        return !!projectDirectory || (sceneInstances ? sceneInstances.count > 0 : false)
+            || (importedGeometry ? importedGeometry.loaded : false)
+    }
+
+    function unsavedActionTitle() {
+        if (pendingProjectAction === "close")
+            return "Save before closing?"
+        if (pendingProjectAction === "open")
+            return "Save before opening another project?"
+        if (pendingProjectAction === "import")
+            return "Save before replacing this scene?"
+        return "Save project changes?"
+    }
+
+    function unsavedActionMessage() {
+        let projectName = "this project"
+        if (projectDirectory) {
+            const path = decodeURIComponent(projectDirectory).replace(/[\\/]+$/, "")
+            projectName = path.substring(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1) || projectName
+        }
+        const source = projectDirectory
+            ? `There are unsaved changes to ${projectName}.`
+            : "This scene has not been saved as a project yet."
+        let message = source
+        if (pendingProjectAction === "close")
+            message += " Save it before closing the workbench, or close without saving?"
+        else if (pendingProjectAction === "open")
+            message += " Opening another project will replace the current scene. Save it first, open without saving, or cancel."
+        else if (pendingProjectAction === "import")
+            message += " Importing this model will replace the current scene. Save it first, replace without saving, or cancel."
+        if (projectSaveError)
+            message += `\n\nSave failed: ${projectSaveError}`
+        return message
+    }
+
+    function cancelPendingProjectAction() {
+        unsavedProjectDialog.close()
+        pendingProjectAction = ""
+        pendingProjectImportUrl = ""
+        pendingProjectDiscardChanges = false
+    }
+
     function markProjectDirty() {
-        if (!restoringProjectGeometry)
+        if (!restoringProjectGeometry && hasProjectState())
             projectDirty = true
     }
 
     function requestProjectAction(action, importUrl) {
         pendingProjectAction = action
         pendingProjectImportUrl = importUrl || ""
-        if (projectDirty) {
+        pendingProjectDiscardChanges = false
+        projectSaveError = ""
+        if (projectDirty && hasProjectState()) {
             unsavedProjectDialog.open()
             return
         }
+        projectDirty = false
         continuePendingProjectAction()
     }
 
     function continuePendingProjectAction() {
         const action = pendingProjectAction
         const importUrl = pendingProjectImportUrl
+        const discardChanges = pendingProjectDiscardChanges
         pendingProjectAction = ""
         pendingProjectImportUrl = ""
+        pendingProjectDiscardChanges = false
         if (action === "open")
             projectOpenDialog.open()
         else if (action === "import")
-            performMeshImport(importUrl)
+            performMeshImport(importUrl, discardChanges)
         else if (action === "close")
             window.close()
     }
@@ -117,6 +276,107 @@ ApplicationWindow {
         if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
             return importedGeometry
         return geometryForKey(sceneInstances.get(selectedInstanceIndex).geometryKey)
+    }
+
+    function selectedInstanceIndices() {
+        const indices = []
+        if (selectedInstanceIndex >= 0 && selectedInstanceIndex < sceneInstances.count
+                && isInstanceSelected(selectedInstanceIndex))
+            indices.push(selectedInstanceIndex)
+        for (let index = 0; index < sceneInstances.count; ++index) {
+            if (index !== selectedInstanceIndex && isInstanceSelected(index))
+                indices.push(index)
+        }
+        return indices
+    }
+
+    function selectedInstanceCount() {
+        return selectedInstanceIndices().length
+    }
+
+    function isInstanceSelected(index) {
+        if (index < 0 || index >= sceneInstances.count)
+            return false
+        const id = sceneInstances.get(index).instanceId
+        return selectedInstanceIds.indexOf(id) >= 0
+    }
+
+    function clearInstanceSelection() {
+        selectedInstanceIds = []
+        selectionAnchorId = ""
+        selectedInstanceIndex = -1
+        modelSelected = false
+        meshAnalysis = ({})
+    }
+
+    function updateInstanceSelection(index, modifiers) {
+        if (index < 0 || index >= sceneInstances.count)
+            return
+        const id = sceneInstances.get(index).instanceId
+        const control = (modifiers & Qt.ControlModifier) !== 0
+        const shift = (modifiers & Qt.ShiftModifier) !== 0
+        if (!control && !shift && isInstanceSelected(index)) {
+            activateInstanceIndex(index)
+            return
+        }
+        if (shift && selectionAnchorId) {
+            let anchor = -1
+            for (let i = 0; i < sceneInstances.count; ++i) {
+                if (sceneInstances.get(i).instanceId === selectionAnchorId) {
+                    anchor = i
+                    break
+                }
+            }
+            if (anchor >= 0) {
+                const ids = control ? selectedInstanceIds.slice() : []
+                const start = Math.min(anchor, index)
+                const end = Math.max(anchor, index)
+                for (let i = start; i <= end; ++i) {
+                    const rangeId = sceneInstances.get(i).instanceId
+                    if (ids.indexOf(rangeId) < 0)
+                        ids.push(rangeId)
+                }
+                selectedInstanceIds = ids
+                activateInstanceIndex(index)
+                return
+            }
+        }
+        if (control) {
+            const ids = selectedInstanceIds.slice()
+            const existing = ids.indexOf(id)
+            if (existing >= 0)
+                ids.splice(existing, 1)
+            else
+                ids.push(id)
+            selectedInstanceIds = ids
+            if (ids.length === 0) {
+                clearInstanceSelection()
+                return
+            }
+            selectionAnchorId = id
+            activateInstanceIndex(ids.indexOf(id) >= 0 ? index : findInstanceIndex(ids[ids.length - 1]))
+            return
+        }
+        setInstanceSelected(index)
+    }
+
+    function findInstanceIndex(instanceId) {
+        for (let index = 0; index < sceneInstances.count; ++index) {
+            if (sceneInstances.get(index).instanceId === instanceId)
+                return index
+        }
+        return -1
+    }
+
+    function selectAllInstances() {
+        if (sceneInstances.count === 0)
+            return
+        const ids = []
+        for (let i = 0; i < sceneInstances.count; ++i)
+            ids.push(sceneInstances.get(i).instanceId)
+        selectedInstanceIds = ids
+        selectionAnchorId = ids[0]
+        activateInstanceIndex(0)
     }
 
     function geometryForKey(key) {
@@ -171,12 +431,14 @@ ApplicationWindow {
         const result = projectStore.saveProject(folderUrl, projectSceneDocument(), projectGeometryRecords())
         if (!result.ok) {
             statusLabel.text = result.error || "Could not save the native project."
+            projectSaveError = statusLabel.text
             if (pendingProjectAction)
                 unsavedProjectDialog.open()
             return { ok: false, error: statusLabel.text }
         }
         projectDirectory = folderUrl.toString()
         projectDirty = false
+        projectSaveError = ""
         unsavedProjectDialog.close()
         statusLabel.text = `Saved native project to ${folderUrl.toLocalFile()}`
         if (pendingProjectAction)
@@ -336,6 +598,7 @@ ApplicationWindow {
     function createDerivedGeometry() {
         const geometry = Qt.createQmlObject("import OutlawForge.NativeTypes 1.0\nMeshGeometry {}", view3d,
                                              `derivedGeometry${nextGeometryId}`)
+        geometry.loadFailed.connect(function(message) { statusLabel.text = message })
         const key = `derived-${nextGeometryId++}`
         const updated = Object.assign({}, derivedGeometries)
         updated[key] = geometry
@@ -353,6 +616,16 @@ ApplicationWindow {
         geometry.destroy()
     }
 
+    function releaseUnreferencedDerivedGeometry(key) {
+        if (!key || key === "source")
+            return
+        for (let i = 0; i < sceneInstances.count; ++i) {
+            if (sceneInstances.get(i).geometryKey === key)
+                return
+        }
+        destroyDerivedGeometry(key)
+    }
+
     function newSceneInstanceId() {
         return `native-instance-${nextSceneInstanceId++}`
     }
@@ -363,6 +636,8 @@ ApplicationWindow {
             return geometry.loadObj(url)
         if (lowerPath.endsWith(".stl"))
             return geometry.loadStl(url)
+        if (lowerPath.endsWith(".3mf"))
+            return geometry.load3mf(url)
         return false
     }
 
@@ -495,6 +770,117 @@ ApplicationWindow {
         markProjectDirty()
     }
 
+    function openBooleanDialog() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
+            return
+        const options = []
+        const hasMultiSelection = selectedInstanceCount() > 1
+        for (let index = 0; index < sceneInstances.count; ++index) {
+            if (index === selectedInstanceIndex || (hasMultiSelection && !isInstanceSelected(index)))
+                continue
+            const row = sceneInstances.get(index)
+            const geometry = geometryForKey(row.geometryKey)
+            if (geometry && geometry.loaded)
+                options.push({ label: row.name, instanceIndex: index })
+        }
+        if (options.length === 0) {
+            statusLabel.text = "Load or duplicate another mesh before running a Boolean operation."
+            return
+        }
+        booleanOperandOptions = options
+        booleanUsesMultiSelection = hasMultiSelection
+        booleanOperand.currentIndex = 0
+        booleanDialog.open()
+    }
+
+    function applyBooleanOperation() {
+        if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count
+                || booleanOperandOptions.length === 0
+                || (!booleanUsesMultiSelection && (booleanOperand.currentIndex < 0
+                    || booleanOperand.currentIndex >= booleanOperandOptions.length)))
+            return false
+        const firstIndex = selectedInstanceIndex
+        const firstRow = sceneInstances.get(firstIndex)
+        const firstInstanceId = firstRow.instanceId
+        const operands = booleanUsesMultiSelection
+            ? booleanOperandOptions
+            : [booleanOperandOptions[booleanOperand.currentIndex]]
+        const consumedInstanceIds = operands.map(operand => sceneInstances.get(operand.instanceIndex).instanceId)
+        const firstGeometry = geometryForKey(firstRow.geometryKey)
+        let currentGeometry = firstGeometry
+        let currentOffset = Qt.vector3d(firstRow.offsetX, firstRow.offsetY, firstRow.offsetZ)
+        let currentRotation = Qt.vector3d(firstRow.rotationX, firstRow.rotationY, firstRow.rotationZ)
+        let currentScale = Qt.vector3d(firstRow.scaleX, firstRow.scaleY, firstRow.scaleZ)
+        const intermediateResults = []
+        for (const operand of operands) {
+            const secondRow = sceneInstances.get(operand.instanceIndex)
+            const secondGeometry = geometryForKey(secondRow.geometryKey)
+            const resultGeometry = createDerivedGeometry()
+            const result = currentGeometry.booleanMesh(secondGeometry, booleanOperation.currentText.toLowerCase(),
+                resultGeometry.geometry,
+                currentOffset, currentRotation, currentScale,
+                Qt.vector3d(secondRow.offsetX, secondRow.offsetY, secondRow.offsetZ),
+                Qt.vector3d(secondRow.rotationX, secondRow.rotationY, secondRow.rotationZ),
+                Qt.vector3d(secondRow.scaleX, secondRow.scaleY, secondRow.scaleZ))
+            if (result.error) {
+                destroyDerivedGeometry(resultGeometry.key)
+                for (const intermediate of intermediateResults)
+                    destroyDerivedGeometry(intermediate.key)
+                statusLabel.text = result.error
+                return false
+            }
+            intermediateResults.push(resultGeometry)
+            currentGeometry = resultGeometry.geometry
+            currentOffset = Qt.vector3d(0, 0, 0)
+            currentRotation = Qt.vector3d(0, 0, 0)
+            currentScale = Qt.vector3d(1, 1, 1)
+        }
+        const finalGeometry = intermediateResults[intermediateResults.length - 1]
+        const previousGeometryKey = firstRow.geometryKey
+        const activeIndex = findInstanceIndex(firstInstanceId)
+        if (activeIndex < 0) {
+            for (const intermediate of intermediateResults)
+                destroyDerivedGeometry(intermediate.key)
+            statusLabel.text = "The active input was removed before the operation could be committed."
+            return false
+        }
+        sceneInstances.setProperty(activeIndex, "geometryKey", finalGeometry.key)
+        sceneInstances.setProperty(activeIndex, "name", `${firstRow.name} - ${booleanOperation.currentText}`)
+        sceneInstances.setProperty(activeIndex, "piece", "derived")
+        sceneInstances.setProperty(activeIndex, "offsetX", 0)
+        sceneInstances.setProperty(activeIndex, "offsetY", 0)
+        sceneInstances.setProperty(activeIndex, "offsetZ", 0)
+        sceneInstances.setProperty(activeIndex, "rotationX", 0)
+        sceneInstances.setProperty(activeIndex, "rotationY", 0)
+        sceneInstances.setProperty(activeIndex, "rotationZ", 0)
+        sceneInstances.setProperty(activeIndex, "scaleX", 1)
+        sceneInstances.setProperty(activeIndex, "scaleY", 1)
+        sceneInstances.setProperty(activeIndex, "scaleZ", 1)
+        const removedGeometryKeys = []
+        const removeIndices = []
+        for (const id of consumedInstanceIds) {
+            const index = findInstanceIndex(id)
+            if (index >= 0 && id !== firstInstanceId)
+                removeIndices.push(index)
+        }
+        removeIndices.sort((a, b) => b - a)
+        for (const index of removeIndices) {
+            removedGeometryKeys.push(sceneInstances.get(index).geometryKey)
+            sceneInstances.remove(index)
+        }
+        const updatedActiveIndex = findInstanceIndex(firstInstanceId)
+        setInstanceSelected(updatedActiveIndex)
+        for (let i = 0; i < intermediateResults.length - 1; ++i)
+            destroyDerivedGeometry(intermediateResults[i].key)
+        releaseUnreferencedDerivedGeometry(previousGeometryKey)
+        for (const key of removedGeometryKeys)
+            releaseUnreferencedDerivedGeometry(key)
+        refreshMeshAnalysis()
+        statusLabel.text = `${booleanOperation.currentText} complete: ${finalGeometry.geometry.triangleCount} triangles. Combined ${operands.length + 1} objects; the input objects were consumed.`
+        markProjectDirty()
+        return true
+    }
+
     function applyPlaneSlice() {
         const point = Qt.vector3d(slicePointX.value / 100.0, slicePointY.value / 100.0, slicePointZ.value / 100.0)
         const normal = Qt.vector3d(sliceNormalX.value / 10000.0, sliceNormalY.value / 10000.0, sliceNormalZ.value / 10000.0)
@@ -583,9 +969,11 @@ ApplicationWindow {
     NativeProjectStore { id: projectStore }
 
     onClosing: function(close) {
-        if (projectDirty) {
+        if (projectDirty && hasProjectState()) {
             close.accepted = false
             window.requestProjectAction("close")
+        } else {
+            projectDirty = false
         }
     }
 
@@ -593,20 +981,72 @@ ApplicationWindow {
     onModelRotationChanged: { syncActiveInstance(); if (!restoringInstanceState) markProjectDirty() }
     onModelScaleChanged: { syncActiveInstance(); if (!restoringInstanceState) markProjectDirty() }
     onModelVisibleChanged: { syncActiveInstance(); if (!restoringInstanceState) markProjectDirty() }
+    onScenePanelVisibleChanged: {
+        const shift = -scenePanel.width * 0.125 * (scenePanelVisible ? 1 : -1)
+        cameraRig.position = Qt.vector3d(cameraRig.position.x + shift, cameraRig.position.y, cameraRig.position.z)
+    }
 
-    header: ToolBar {
-        height: 52
-        background: Rectangle { color: "#191714"; border.color: "#49301f"; border.width: 1 }
+    ToolBar {
+        id: headerBar
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 58
+        z: 100
+        background: Rectangle {
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: "#66343b45" }
+                GradientStop { position: 0.48; color: "#661e252d" }
+                GradientStop { position: 1.0; color: "#6614191d" }
+            }
+            border.color: "#626c76"
+            border.width: 1
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: 18
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: "#55c5e8ff" }
+                    GradientStop { position: 0.55; color: "#26c5e8ff" }
+                    GradientStop { position: 1.0; color: "#00c5e8ff" }
+                }
+            }
+            Rectangle {
+                x: parent.width * 0.31
+                y: -22
+                width: 250
+                height: 100
+                rotation: -8
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: "#00ffffff" }
+                    GradientStop { position: 0.5; color: "#20ffffff" }
+                    GradientStop { position: 1.0; color: "#00ffffff" }
+                }
+            }
+        }
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 16
             anchors.rightMargin: 16
-            Rectangle {
-                Layout.preferredWidth: 27
-                Layout.preferredHeight: 27
-                radius: 6
-                color: "#f28c45"
-                Text { anchors.centerIn: parent; text: "OF"; color: "#17120e"; font.pixelSize: 10; font.weight: Font.Black; font.letterSpacing: -0.5 }
+            Item {
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 34
+                Rectangle {
+                    x: 2; y: 4; width: 29; height: 29; radius: 4
+                    color: "#582e19"
+                    border.color: "#8b4d25"
+                }
+                Rectangle {
+                    x: 0; y: 0; width: 29; height: 29; radius: 4
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: "#ffb36c" }
+                        GradientStop { position: 0.16; color: "#f08b42" }
+                        GradientStop { position: 1.0; color: "#c75e29" }
+                    }
+                    border.color: "#ffc48d"
+                    Text { anchors.centerIn: parent; text: "OF"; color: "#17120e"; font.pixelSize: 11; font.weight: Font.Black; font.letterSpacing: -0.5 }
+                }
             }
             Label {
                 text: "OUTLAW FORGE"
@@ -616,11 +1056,12 @@ ApplicationWindow {
                 font.letterSpacing: 1.35
             }
             Label {
-                text: "NATIVE VIEWPORT FOUNDATION"
+                text: "NATIVE WORKBENCH"
                 color: "#92877c"
                 font.pixelSize: 10
                 Layout.leftMargin: 12
             }
+            Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 26; color: "#343c37"; Layout.leftMargin: 8; Layout.rightMargin: 4 }
             ToolButton {
                 text: "File"
                 onClicked: fileMenu.open()
@@ -633,7 +1074,7 @@ ApplicationWindow {
                     MenuItem { text: "Save Project    Ctrl+S"; enabled: window.projectDirty || !!window.projectDirectory; onTriggered: window.saveCurrentNativeProject() }
                     MenuItem { text: "Save Project As...    Ctrl+Shift+S"; onTriggered: window.saveNativeProjectAs() }
                     MenuSeparator {}
-                    MenuItem { text: "Import model...    Ctrl+O"; onTriggered: meshDialog.open() }
+                    MenuItem { text: "Add model...    Ctrl+O"; onTriggered: meshDialog.open() }
                     MenuItem { text: "Export selected mesh as STL..."; enabled: selectedInstanceIndex >= 0; onTriggered: exportDialog.open() }
                     MenuItem { text: "Clear scene"; enabled: sceneInstances.count > 0; onTriggered: window.clearScene() }
                     MenuSeparator {}
@@ -648,8 +1089,8 @@ ApplicationWindow {
                 Menu {
                     id: editMenu
                     title: "Edit"
-                    MenuItem { text: "Duplicate instance    Ctrl+D"; enabled: selectedInstanceIndex >= 0; onTriggered: window.duplicateSelectedInstance() }
-                    MenuItem { text: "Remove instance    Delete"; enabled: selectedInstanceIndex >= 0; onTriggered: window.removeSelectedInstance() }
+                    MenuItem { text: selectedInstanceCount() > 1 ? `Duplicate ${selectedInstanceCount()} objects    Ctrl+D` : "Duplicate instance    Ctrl+D"; enabled: selectedInstanceIndex >= 0; onTriggered: window.duplicateSelectedInstance() }
+                    MenuItem { text: selectedInstanceCount() > 1 ? `Remove ${selectedInstanceCount()} objects    Delete` : "Remove instance    Delete"; enabled: selectedInstanceIndex >= 0; onTriggered: window.removeSelectedInstance() }
                     MenuSeparator {}
                     MenuItem {
                         text: "Reset transforms"
@@ -664,6 +1105,10 @@ ApplicationWindow {
                     }
                     MenuItem { text: "Place on build plate"; enabled: selectedInstanceIndex >= 0; onTriggered: window.placeSelectedOnBed() }
                     MenuItem { text: "Center on build plate"; enabled: selectedInstanceIndex >= 0; onTriggered: window.centerSelectedOnPlate() }
+                    MenuSeparator {}
+                    MenuItem { text: "Arrange build plate..."; enabled: sceneInstances.count > 0; onTriggered: arrangeDialog.open() }
+                    MenuSeparator {}
+                    MenuItem { text: "Boolean operation..."; enabled: selectedInstanceIndex >= 0 && sceneInstances.count > 1; onTriggered: window.openBooleanDialog() }
                 }
             }
             ToolButton {
@@ -718,9 +1163,17 @@ ApplicationWindow {
             Item { Layout.fillWidth: true }
             Label {
                 text: "Z-UP  /  MILLIMETRES"
-                color: "#79dec2"
+                color: "#aab8af"
                 font.pixelSize: 10
                 font.family: "monospace"
+            }
+            Label {
+                text: window.projectDirty && window.hasProjectState() ? "●  UNSAVED" : (window.projectDirectory ? "SAVED PROJECT" : "LOCAL SESSION")
+                color: window.projectDirty && window.hasProjectState() ? "#f29a56" : "#7b8a80"
+                font.pixelSize: 9
+                font.weight: Font.DemiBold
+                font.letterSpacing: 0.7
+                Layout.leftMargin: 6
             }
             Button {
                 text: "Auto Orient"
@@ -741,46 +1194,134 @@ ApplicationWindow {
                 contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
             Button {
-                text: "Import Model"
+                text: "Add Model"
                 onClicked: meshDialog.open()
-                background: Rectangle { color: parent.down ? "#d76c32" : "#f28c45"; border.color: "#ffbd79"; radius: 4 }
+                background: Rectangle {
+                    id: importSurface
+                    property bool pressed: parent.down
+                    anchors.fill: parent
+                    anchors.topMargin: pressed ? 2 : 0
+                    anchors.bottomMargin: pressed ? 0 : 4
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: importSurface.pressed ? "#f08b42" : "#ffb36c" }
+                        GradientStop { position: 0.2; color: importSurface.pressed ? "#df7534" : "#f28c45" }
+                        GradientStop { position: 1.0; color: importSurface.pressed ? "#b34d24" : "#d5682d" }
+                    }
+                    border.color: pressed ? "#d9773e" : "#ffc48d"
+                    radius: 4
+                    layer.enabled: true
+                    layer.effect: MultiEffect {
+                        shadowEnabled: !importSurface.pressed
+                        shadowColor: "#99000000"
+                        shadowBlur: 0.28
+                        shadowVerticalOffset: 3
+                    }
+                }
                 contentItem: Text { text: parent.text; color: "#1c130d"; font.pixelSize: 11; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
         }
     }
 
-    RowLayout {
+    Item {
+        id: viewportWorkspace
         anchors.fill: parent
-        spacing: 0
 
         Rectangle {
-            Layout.preferredWidth: 230
+            id: scenePanel
+            width: 258
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            anchors.topMargin: headerBar.height
+            z: 30
             visible: window.scenePanelVisible
-            Layout.fillHeight: true
-            color: "#141817"
-            border.color: "#343a35"
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: "#662b2e37" }
+                GradientStop { position: 0.52; color: "#661c2026" }
+                GradientStop { position: 1.0; color: "#66111615" }
+            }
+            border.color: "#5a626b"
             border.width: 1
 
-            ColumnLayout {
+            Rectangle {
                 anchors.fill: parent
-                anchors.margins: 16
-                spacing: 12
-                Label { text: "01   /   SCENE"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0 }
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: "#32c6e7ff" }
+                    GradientStop { position: 0.32; color: "#18c6e7ff" }
+                    GradientStop { position: 0.72; color: "#18ffb36c" }
+                    GradientStop { position: 1.0; color: "#00ffffff" }
+                }
+            }
+            Rectangle {
+                x: -38
+                y: 250
+                width: 320
+                height: 110
+                rotation: -16
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: "#00ffffff" }
+                    GradientStop { position: 0.48; color: "#20ffd9ad" }
+                    GradientStop { position: 1.0; color: "#00ffffff" }
+                }
+            }
+
+            ScrollView {
+                id: sceneScrollView
+                anchors.fill: parent
+                anchors.margins: 7
+                clip: true
+                contentWidth: availableWidth
+                ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+                ColumnLayout {
+                x: 7
+                width: sceneScrollView.availableWidth - 14
+                spacing: 9
+                Label { text: "SCENE"; color: "#a9b4ac"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.35 }
+                Label { text: `${sceneInstances.count} ${sceneInstances.count === 1 ? "OBJECT" : "OBJECTS"}${window.selectedInstanceCount() > 1 ? `  /  ${window.selectedInstanceCount()} SELECTED` : ""}`; color: "#657169"; font.pixelSize: 9; font.family: "monospace" }
+                Label { visible: sceneInstances.count > 1; text: "Ctrl-click: add or remove  /  Shift-click: range"; color: "#77877d"; font.pixelSize: 9; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 Repeater {
                     model: sceneInstances
                     delegate: Rectangle {
+                        id: sceneRow
                         required property int index
                         required property string name
                         Layout.fillWidth: true
-                        height: 36
-                        radius: 3
-                        color: index === window.selectedInstanceIndex ? "#332219" : "#1d2421"
-                        border.color: index === window.selectedInstanceIndex ? "#e57b3e" : "#39433c"
-                        MouseArea { anchors.fill: parent; onClicked: window.setInstanceSelected(index) }
+                        height: 38
+                        radius: 4
+                        z: rowHover.hovered ? 2 : 0
+                        color: index === window.selectedInstanceIndex
+                            ? (rowHover.hovered ? "#3a291d" : "#292018")
+                            : window.isInstanceSelected(index)
+                                ? (rowHover.hovered ? "#183432" : "#142725")
+                            : (rowHover.hovered ? "#242d28" : "#191f1c")
+                        border.color: index === window.selectedInstanceIndex ? "#e59456" : window.isInstanceSelected(index) ? "#62c7b3" : "#3b4840"
+                        transform: Translate {
+                            y: rowHover.hovered ? -2 : 0
+                            Behavior on y { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+                        }
+                        layer.enabled: true
+                        layer.effect: MultiEffect {
+                            shadowEnabled: rowHover.hovered || window.isInstanceSelected(sceneRow.index)
+                            shadowColor: sceneRow.index === window.selectedInstanceIndex ? "#a64b2410" : "#6262c7b3"
+                            shadowBlur: 0.28
+                            shadowVerticalOffset: 3
+                        }
+                        HoverHandler { id: rowHover }
+                        Rectangle {
+                            visible: window.isInstanceSelected(sceneRow.index)
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: 3
+                            color: sceneRow.index === window.selectedInstanceIndex ? "#f29a56" : "#62c7b3"
+                            radius: 2
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: function(mouse) { window.updateInstanceSelection(index, mouse.modifiers) } }
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 10
-                            Label { text: "▰"; color: "#f28c45"; font.pixelSize: 13 }
+                            Label { text: "◆"; color: index === window.selectedInstanceIndex ? "#f29a56" : window.isInstanceSelected(index) ? "#62c7b3" : "#76847a"; font.pixelSize: 10 }
                             Label { text: name; color: "#e5e2da"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
                         }
                     }
@@ -792,18 +1333,35 @@ ApplicationWindow {
                     text: importedGeometry.loaded
                         ? `Bounds: ${window.selectedWorldDimensions().x.toFixed(2)} x ${window.selectedWorldDimensions().y.toFixed(2)} x ${window.selectedWorldDimensions().z.toFixed(2)} mm (world aligned)`
                         : "Import an STL or OBJ to inspect a model in the native viewport. Source files are opened read-only."
-                    color: "#a8947f"
-                    font.pixelSize: 11
+                    color: "#a9b5ac"
+                    font.pixelSize: 10
+                    font.family: "monospace"
                     wrapMode: Text.WordWrap
                 }
                 Button {
-                    text: "Duplicate instance"
+                    text: window.selectedInstanceCount() > 1
+                        ? `Duplicate ${window.selectedInstanceCount()} objects` : "Duplicate instance"
+                    Layout.fillWidth: true
                     enabled: importedGeometry.loaded && selectedInstanceIndex >= 0
                     onClicked: window.duplicateSelectedInstance()
                     ToolTip.visible: hovered
                     ToolTip.text: "Duplicate selected mesh (Ctrl+D)"
                     contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                    background: Rectangle {
+                        id: duplicateSurface
+                        property bool buttonEnabled: parent.enabled
+                        anchors.fill: parent
+                        anchors.bottomMargin: parent.enabled ? 4 : 1
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: duplicateSurface.buttonEnabled ? "#68737b" : "#39403f" }
+                            GradientStop { position: 0.2; color: duplicateSurface.buttonEnabled ? "#424b52" : "#292e2d" }
+                            GradientStop { position: 1.0; color: duplicateSurface.buttonEnabled ? "#242a2d" : "#1d2221" }
+                        }
+                        border.color: buttonEnabled ? "#89949c" : "#414845"
+                        radius: 5
+                        layer.enabled: true
+                        layer.effect: MultiEffect { shadowEnabled: duplicateSurface.buttonEnabled; shadowColor: "#99000000"; shadowBlur: 0.32; shadowVerticalOffset: 4 }
+                    }
                 }
                 RowLayout {
                     visible: importedGeometry.loaded && selectedInstanceIndex >= 0
@@ -830,23 +1388,55 @@ ApplicationWindow {
                 }
                 Button {
                     text: importedGeometry.loaded ? "Remove instance" : "Choose model"
+                    Layout.fillWidth: true
                     onClicked: importedGeometry.loaded ? window.removeSelectedInstance() : meshDialog.open()
                     ToolTip.visible: hovered && importedGeometry.loaded
                     ToolTip.text: "Remove selected scene instance (Delete)"
-                    contentItem: Text { text: parent.text; color: "#e5e2da"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                    contentItem: Text { text: parent.text; color: importedGeometry.loaded ? "#f0e9e0" : "#24150d"; font.pixelSize: 11; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle {
+                        id: chooseModelSurface
+                        property bool pressed: parent.down
+                        anchors.fill: parent
+                        anchors.topMargin: parent.down ? 3 : 0
+                        anchors.bottomMargin: parent.down ? 0 : 5
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: chooseModelSurface.pressed ? "#d66b2c" : "#ffc17a" }
+                            GradientStop { position: 0.2; color: importedGeometry.loaded ? "#555f66" : (chooseModelSurface.pressed ? "#e97832" : "#ff9a43") }
+                            GradientStop { position: 1.0; color: importedGeometry.loaded ? "#272e31" : (chooseModelSurface.pressed ? "#a74421" : "#d86429") }
+                        }
+                        border.color: importedGeometry.loaded ? "#818b91" : "#ffd098"
+                        radius: 5
+                        layer.enabled: true
+                        layer.effect: MultiEffect { shadowEnabled: !chooseModelSurface.pressed; shadowColor: "#bb000000"; shadowBlur: 0.42; shadowVerticalOffset: 5 }
+                    }
                 }
                 Button {
                     text: modelVisible ? "Hide instance" : "Show instance"
+                    Layout.fillWidth: true
                     enabled: importedGeometry.loaded && selectedInstanceIndex >= 0
                     onClicked: window.modelVisible = !window.modelVisible
                     ToolTip.visible: hovered
                     ToolTip.text: "Toggle selected instance visibility (Ctrl+H)"
                     contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                    background: Rectangle {
+                        id: visibilitySurface
+                        property bool buttonEnabled: parent.enabled
+                        anchors.fill: parent
+                        anchors.bottomMargin: parent.enabled ? 4 : 1
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: visibilitySurface.buttonEnabled ? "#68737b" : "#39403f" }
+                            GradientStop { position: 0.2; color: visibilitySurface.buttonEnabled ? "#424b52" : "#292e2d" }
+                            GradientStop { position: 1.0; color: visibilitySurface.buttonEnabled ? "#242a2d" : "#1d2221" }
+                        }
+                        border.color: buttonEnabled ? "#89949c" : "#414845"
+                        radius: 5
+                        layer.enabled: true
+                        layer.effect: MultiEffect { shadowEnabled: visibilitySurface.buttonEnabled; shadowColor: "#99000000"; shadowBlur: 0.32; shadowVerticalOffset: 4 }
+                    }
                 }
                 Button {
                     text: "Reset transforms"
+                    Layout.fillWidth: true
                     enabled: importedGeometry.loaded
                     onClicked: {
                         window.modelOffset = Qt.vector3d(0, 0, 0)
@@ -856,15 +1446,29 @@ ApplicationWindow {
                         frameImportedModel()
                     }
                     contentItem: Text { text: parent.text; color: parent.enabled ? "#e5e2da" : "#746f66"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: "#202723"; border.color: "#424b43"; radius: 3 }
+                    background: Rectangle {
+                        id: resetSurface
+                        property bool buttonEnabled: parent.enabled
+                        anchors.fill: parent
+                        anchors.bottomMargin: parent.enabled ? 4 : 1
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: resetSurface.buttonEnabled ? "#59646a" : "#39403f" }
+                            GradientStop { position: 0.2; color: resetSurface.buttonEnabled ? "#3c454b" : "#292e2d" }
+                            GradientStop { position: 1.0; color: resetSurface.buttonEnabled ? "#232a2d" : "#1d2221" }
+                        }
+                        border.color: buttonEnabled ? "#808b91" : "#414845"
+                        radius: 5
+                        layer.enabled: true
+                        layer.effect: MultiEffect { shadowEnabled: resetSurface.buttonEnabled; shadowColor: "#99000000"; shadowBlur: 0.32; shadowVerticalOffset: 4 }
+                    }
                 }
                 Rectangle {
                     visible: importedGeometry.loaded
                     Layout.fillWidth: true
-                    Layout.topMargin: 8
+                    Layout.topMargin: 5
                     implicitHeight: meshRepairColumn.implicitHeight + 16
-                    color: "#191f1c"
-                    border.color: "#3a4a40"
+                    color: "#171d19"
+                    border.color: "#303b34"
                     radius: 4
                     ColumnLayout {
                         id: meshRepairColumn
@@ -877,7 +1481,7 @@ ApplicationWindow {
                         Label {
                             Layout.fillWidth: true
                             text: meshAnalysis.triangles === undefined
-                                ? `${importedGeometry.triangleCount} triangles - analyze for edge counts`
+                            ? `${window.selectedGeometry().triangleCount} triangles - analyze for edge counts`
                                 : `${meshAnalysis.triangles} tris  /  ${meshAnalysis.degenerateTriangles} degenerate\n${meshAnalysis.boundaryEdges} boundary edges  /  ${meshAnalysis.nonManifoldEdges} non-manifold`
                             color: "#c8c3b8"
                             font.pixelSize: 9
@@ -954,19 +1558,20 @@ ApplicationWindow {
                 Label { text: "RENDER CORE"; color: "#b7a28e"; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.0 }
                 Label { text: "Qt Quick 3D / C++"; color: "#e5e2da"; font.pixelSize: 11 }
                 Label { text: "Rendering Hardware Interface"; color: "#92877c"; font.pixelSize: 10; wrapMode: Text.WordWrap }
+                }
             }
         }
 
         Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+            id: viewportRoot
+            anchors.fill: parent
 
             View3D {
                 id: view3d
                 anchors.fill: parent
                 camera: camera
                 environment: SceneEnvironment {
-                    clearColor: "#151a18"
+                    clearColor: "#20232b"
                     backgroundMode: SceneEnvironment.Color
                     antialiasingMode: SceneEnvironment.MSAA
                     antialiasingQuality: SceneEnvironment.High
@@ -983,11 +1588,11 @@ ApplicationWindow {
                         // Default isometric angle looks toward the common Z-up
                         // CAD front (-Y) side of the build plate.
                         eulerRotation: Qt.vector3d(48, 0, 0)
-                        position: Qt.vector3d(0, 0, 0)
+                        position: Qt.vector3d(window.viewportHorizontalOffset(), 0, 0)
 
                         PerspectiveCamera {
                             id: camera
-                            position: Qt.vector3d(0, 0, 520)
+                            position: Qt.vector3d(0, 0, 180)
                             clipNear: 0.1
                             clipFar: 100000
                             fieldOfView: 42
@@ -1008,11 +1613,48 @@ ApplicationWindow {
                     Model {
                         source: "#Cube"
                         position: Qt.vector3d(0, 0, -0.6)
-                        scale: Qt.vector3d(2.2, 2.2, 0.012)
+                        scale: Qt.vector3d(window.buildPlateWidthMm / 100, window.buildPlateDepthMm / 100, 0.012)
                         materials: PrincipledMaterial {
-                            baseColor: "#242d28"
-                            roughness: 0.88
-                            metalness: 0.08
+                            baseColor: "#292c32"
+                            roughness: 0.76
+                            metalness: 0.14
+                        }
+                    }
+
+                    // Broad, low-opacity light passes sit just below the crisp
+                    // grid strokes to create a restrained colored halo.
+                    Repeater3D {
+                        model: 23
+                        delegate: Model {
+                            required property int index
+                            visible: window.gridVisible && (index === 0 || index === 11 || index === 22)
+                            source: "#Cube"
+                            position: Qt.vector3d((index - 11) * window.buildPlateWidthMm / 22, 0, 0.045)
+                            scale: Qt.vector3d(index === 11 ? 0.018 : 0.014, window.buildPlateDepthMm / 100, 0.0012)
+                            materials: PrincipledMaterial {
+                                alphaMode: PrincipledMaterial.Blend
+                                opacity: 0.24
+                                lighting: PrincipledMaterial.NoLighting
+                                baseColor: index === 11 ? "#42d8f4" : "#d98c50"
+                                emissiveFactor: index === 11 ? Qt.vector3d(0.08, 0.65, 0.82) : Qt.vector3d(0.4, 0.14, 0.035)
+                            }
+                        }
+                    }
+                    Repeater3D {
+                        model: 23
+                        delegate: Model {
+                            required property int index
+                            visible: window.gridVisible && (index === 0 || index === 11 || index === 22)
+                            source: "#Cube"
+                            position: Qt.vector3d(0, (index - 11) * window.buildPlateDepthMm / 22, 0.045)
+                            scale: Qt.vector3d(window.buildPlateWidthMm / 100, index === 11 ? 0.018 : 0.014, 0.0012)
+                            materials: PrincipledMaterial {
+                                alphaMode: PrincipledMaterial.Blend
+                                opacity: 0.24
+                                lighting: PrincipledMaterial.NoLighting
+                                baseColor: index === 11 ? "#42d8f4" : "#d98c50"
+                                emissiveFactor: index === 11 ? Qt.vector3d(0.08, 0.65, 0.82) : Qt.vector3d(0.4, 0.14, 0.035)
+                            }
                         }
                     }
 
@@ -1022,9 +1664,14 @@ ApplicationWindow {
                             required property int index
                             visible: window.gridVisible
                             source: "#Cube"
-                            position: Qt.vector3d((index - 11) * 10, 0, 0.05)
-                            scale: Qt.vector3d(0.003, 2.2, 0.001)
-                            materials: PrincipledMaterial { baseColor: "#49544a"; roughness: 1.0 }
+                            position: Qt.vector3d((index - 11) * window.buildPlateWidthMm / 22, 0, 0.05)
+                            scale: Qt.vector3d(0.003, window.buildPlateDepthMm / 100, 0.001)
+                            materials: PrincipledMaterial {
+                                baseColor: index === 11 ? "#65c5d3" : ((index === 0 || index === 22) ? "#b78a68" : "#63666b")
+                                emissiveFactor: index === 11 ? Qt.vector3d(0.04, 0.38, 0.5) : ((index === 0 || index === 22) ? Qt.vector3d(0.25, 0.09, 0.025) : Qt.vector3d(0.012, 0.016, 0.02))
+                                roughness: 0.82
+                                metalness: 0.16
+                            }
                         }
                     }
                     Repeater3D {
@@ -1033,9 +1680,14 @@ ApplicationWindow {
                             required property int index
                             visible: window.gridVisible
                             source: "#Cube"
-                            position: Qt.vector3d(0, (index - 11) * 10, 0.05)
-                            scale: Qt.vector3d(2.2, 0.003, 0.001)
-                            materials: PrincipledMaterial { baseColor: "#49544a"; roughness: 1.0 }
+                            position: Qt.vector3d(0, (index - 11) * window.buildPlateDepthMm / 22, 0.05)
+                            scale: Qt.vector3d(window.buildPlateWidthMm / 100, 0.003, 0.001)
+                            materials: PrincipledMaterial {
+                                baseColor: index === 11 ? "#65c5d3" : ((index === 0 || index === 22) ? "#b78a68" : "#63666b")
+                                emissiveFactor: index === 11 ? Qt.vector3d(0.04, 0.38, 0.5) : ((index === 0 || index === 22) ? Qt.vector3d(0.25, 0.09, 0.025) : Qt.vector3d(0.012, 0.016, 0.02))
+                                roughness: 0.82
+                                metalness: 0.16
+                            }
                         }
                     }
 
@@ -1067,7 +1719,7 @@ ApplicationWindow {
                             visible: meshGeometry.loaded && instanceVisible
                             pickable: true
                             materials: PrincipledMaterial {
-                            baseColor: index === window.selectedInstanceIndex ? "#f1a35d" : "#bd7840"
+                            baseColor: index === window.selectedInstanceIndex ? "#f1a35d" : window.isInstanceSelected(index) ? "#61c8b4" : "#bd7840"
                                 roughness: 0.42
                                 metalness: 0.22
                                 cullMode: Material.NoCulling
@@ -1260,12 +1912,15 @@ ApplicationWindow {
                         const hit = view3d.pick(mouse.x, mouse.y)
                         if (hit && hit.objectHit && hit.objectHit.instanceIndex !== undefined) {
                             pressedInstanceIndex = hit.objectHit.instanceIndex
-                            window.setInstanceSelected(pressedInstanceIndex)
+                            window.updateInstanceSelection(pressedInstanceIndex, mouse.modifiers)
+                            if (!window.isInstanceSelected(pressedInstanceIndex)) {
+                                pressedInstanceIndex = -1
+                                return
+                            }
                             pressOffset = window.modelOffset
                             pressRotation = window.modelRotation
                             pressScale = window.modelScale
-                            const mode = (mouse.modifiers & Qt.ControlModifier) ? 2
-                                : (mouse.modifiers & Qt.AltModifier) ? 1 : window.viewportTransformMode
+                            const mode = (mouse.modifiers & Qt.AltModifier) ? 1 : window.viewportTransformMode
                             if (mode === 0 && window.viewportTransformAxis !== "Z")
                                 pressPlatePosition = window.screenToBuildPlate(mouse.x, mouse.y)
                             dragTransformMode = mode
@@ -1285,7 +1940,8 @@ ApplicationWindow {
                         viewportContextMenu.instanceIndex = hit && hit.objectHit
                             && hit.objectHit.instanceIndex !== undefined
                             ? hit.objectHit.instanceIndex : -1
-                        if (viewportContextMenu.instanceIndex >= 0)
+                        if (viewportContextMenu.instanceIndex >= 0
+                                && !window.isInstanceSelected(viewportContextMenu.instanceIndex))
                             window.setInstanceSelected(viewportContextMenu.instanceIndex)
                         viewportContextMenu.popup(view3d, mouse.x, mouse.y)
                         return
@@ -1317,10 +1973,9 @@ ApplicationWindow {
                         return
                     }
                     if (hit && hit.objectHit && hit.objectHit.instanceIndex !== undefined) {
-                        window.setInstanceSelected(hit.objectHit.instanceIndex)
                         statusLabel.text = "Model selected - drag to move on the build plate"
                     } else {
-                        window.modelSelected = false
+                        window.clearInstanceSelection()
                     }
                 }
 
@@ -1657,10 +2312,76 @@ ApplicationWindow {
                 }
             }
 
+            Rectangle {
+                id: meshHud
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.leftMargin: window.scenePanelVisible ? scenePanel.width + 14 : 14
+                anchors.rightMargin: 14
+                anchors.topMargin: headerBar.height + 14
+                width: 232
+                height: importedGeometry.loaded ? 76 : 63
+                radius: 4
+                color: "#121715"
+                border.color: "#343d37"
+                opacity: 0.96
+                z: meshHudHover.hovered ? 20 : 1
+                transform: Rotation {
+                    origin.x: meshHud.width / 2
+                    origin.y: meshHud.height / 2
+                    axis.x: 0.15
+                    axis.y: 1
+                    axis.z: 0
+                    angle: meshHudHover.hovered ? 1.4 : 0
+                    Behavior on angle { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                }
+                HoverHandler { id: meshHudHover }
+                layer.enabled: true
+                layer.effect: MultiEffect {
+                    shadowEnabled: true
+                    shadowColor: "#99000000"
+                    shadowBlur: 0.38
+                    shadowVerticalOffset: 6
+                    shadowHorizontalOffset: 2
+                }
+                Column {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 5
+                    Label {
+                        text: importedGeometry.loaded && selectedInstanceIndex >= 0
+                            ? sceneInstances.get(selectedInstanceIndex).name : "BUILD PLATE"
+                        color: "#e8e8df"
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        elide: Text.ElideMiddle
+                        width: parent.width
+                    }
+                    Label {
+                        text: importedGeometry.loaded
+                            ? `${window.selectedWorldDimensions().x.toFixed(1)} x ${window.selectedWorldDimensions().y.toFixed(1)} x ${window.selectedWorldDimensions().z.toFixed(1)} mm`
+                            : `${window.buildPlateWidthMm} x ${window.buildPlateDepthMm} mm PLATE  /  Z-UP`
+                        color: "#c4a07f"
+                        font.pixelSize: 10
+                        font.family: "monospace"
+                    }
+                    Label {
+                        visible: importedGeometry.loaded
+                        text: `${window.selectedGeometry().triangleCount.toLocaleString()} TRIANGLES`
+                        color: "#849188"
+                        font.pixelSize: 8
+                        font.family: "monospace"
+                    }
+                }
+            }
+
             Row {
+                id: viewportDisplayToolbar
                 anchors.top: parent.top
                 anchors.right: parent.right
-                anchors.margins: 14
+                anchors.topMargin: headerBar.height + 14
+                anchors.rightMargin: 14
+                z: 12
                 spacing: 6
 
                 Repeater {
@@ -1750,16 +2471,95 @@ ApplicationWindow {
             }
 
             Rectangle {
+                anchors.left: viewportDisplayToolbar.left
+                anchors.right: viewportDisplayToolbar.right
+                anchors.top: viewportDisplayToolbar.top
+                anchors.bottom: viewportDisplayToolbar.bottom
+                anchors.margins: -8
+                z: 11
+                radius: 7
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: "#69736f" }
+                    GradientStop { position: 0.08; color: "#29312e" }
+                    GradientStop { position: 1.0; color: "#111715" }
+                }
+                border.color: "#818a84"
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 7
+                    radius: 3
+                    color: "#080b0a"
+                    border.color: "#202722"
+                }
+                layer.enabled: true
+                layer.effect: MultiEffect {
+                    shadowEnabled: true
+                    shadowColor: "#dd000000"
+                    shadowBlur: 0.55
+                    shadowVerticalOffset: 9
+                    shadowHorizontalOffset: 3
+                }
+            }
+
+            Rectangle {
                 id: transformToolbar
                 anchors.top: parent.top
                 anchors.horizontalCenter: parent.horizontalCenter
-                anchors.topMargin: 12
+                anchors.horizontalCenterOffset: window.scenePanelVisible ? scenePanel.width * 0.5 : 0
+                anchors.topMargin: headerBar.height + 12
                 z: 20
                 width: transformControls.implicitWidth + 20
                 height: transformControls.implicitHeight + 16
-                color: "#e6121921"
-                border.color: "#3b4b5a"
-                radius: 5
+                color: "#68716d"
+                border.color: "#aab4ad"
+                radius: 7
+                transform: Rotation {
+                    origin.x: transformToolbar.width / 2
+                    origin.y: transformToolbar.height / 2
+                    axis.x: 0.42
+                    axis.y: -1
+                    axis.z: 0
+                    angle: transformToolbarHover.hovered ? 6 : 3
+                    Behavior on angle { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                }
+                HoverHandler { id: transformToolbarHover }
+                layer.enabled: true
+                layer.effect: MultiEffect {
+                    shadowEnabled: true
+                    shadowColor: "#f0000000"
+                    shadowBlur: 0.62
+                    shadowVerticalOffset: 12
+                    shadowHorizontalOffset: 5
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.leftMargin: 2
+                    anchors.rightMargin: 2
+                    anchors.topMargin: 2
+                    anchors.bottomMargin: 8
+                    radius: 5
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: "#24312e" }
+                        GradientStop { position: 0.15; color: "#161f1d" }
+                        GradientStop { position: 1.0; color: "#101513" }
+                    }
+                    border.color: "#3d5149"
+                }
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 7
+                    radius: 3
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: "#343a36" }
+                        GradientStop { position: 1.0; color: "#151a17" }
+                    }
+                }
 
                 ColumnLayout {
                     id: transformControls
@@ -1777,10 +2577,23 @@ ApplicationWindow {
                                 checked: window.viewportTransformMode === index
                                 enabled: importedGeometry.loaded && window.modelSelected
                                 onClicked: window.setTransformMode(index)
-                                background: Rectangle {
-                                    color: parent.checked ? "#254d43" : (parent.down ? "#424b43" : "#202723")
-                                    border.color: parent.checked ? "#61c9ac" : "#424b43"
-                                    radius: 3
+                                background: Item {
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        color: "#070a09"
+                                        radius: 3
+                                    }
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.bottomMargin: parent.parent.down ? 1 : 3
+                                        gradient: Gradient {
+                                            GradientStop { position: 0.0; color: parent.parent.parent.checked ? "#557d6d" : "#4b5550" }
+                                            GradientStop { position: 0.16; color: parent.parent.parent.checked ? "#285344" : "#333d38" }
+                                            GradientStop { position: 1.0; color: parent.parent.parent.checked ? "#172b24" : "#1a211e" }
+                                        }
+                                        border.color: parent.parent.parent.checked ? "#a0d4b8" : "#68736d"
+                                        radius: 3
+                                    }
                                 }
                                 contentItem: Text {
                                     text: parent.text
@@ -1804,10 +2617,23 @@ ApplicationWindow {
                                 checked: window.viewportTransformAxis === modelData
                                 enabled: importedGeometry.loaded && window.modelSelected
                                 onClicked: window.setTransformAxis(modelData)
-                                background: Rectangle {
-                                    color: parent.checked ? "#254d43" : (parent.down ? "#424b43" : "#202723")
-                                    border.color: parent.checked ? "#61c9ac" : "#424b43"
-                                    radius: 3
+                                background: Item {
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        color: "#070a09"
+                                        radius: 3
+                                    }
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.bottomMargin: parent.parent.down ? 1 : 3
+                                        gradient: Gradient {
+                                            GradientStop { position: 0.0; color: parent.parent.parent.checked ? "#557d6d" : "#4b5550" }
+                                            GradientStop { position: 0.16; color: parent.parent.parent.checked ? "#285344" : "#333d38" }
+                                            GradientStop { position: 1.0; color: parent.parent.parent.checked ? "#172b24" : "#1a211e" }
+                                        }
+                                        border.color: parent.parent.parent.checked ? "#a0d4b8" : "#68736d"
+                                        radius: 3
+                                    }
                                 }
                                 contentItem: Text {
                                     text: parent.text
@@ -2276,12 +3102,21 @@ ApplicationWindow {
                 anchors.left: parent.left
                 anchors.bottom: parent.bottom
                 anchors.margins: 14
+                anchors.leftMargin: window.scenePanelVisible ? scenePanel.width + 14 : 14
                 width: Math.min(500, parent.width * 0.55)
                 height: Math.max(54, statusLabel.implicitHeight + 34)
                 radius: 3
-                color: "#141817"
-                border.color: "#39433c"
+                color: "#111614"
+                border.color: "#37413a"
                 opacity: 0.94
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: 3
+                    color: "#ed8b49"
+                    radius: 2
+                }
                 Column {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
@@ -2313,10 +3148,97 @@ ApplicationWindow {
 
             FileDialog {
                 id: meshDialog
-                title: "Import a mesh"
+                title: sceneInstances.count > 0 ? "Add another model" : "Import a mesh"
                 nameFilters: ["Mesh files (*.stl *.obj *.3mf)", "STL mesh (*.stl)", "OBJ mesh (*.obj)", "3MF project (*.3mf)", "All files (*)"]
-                onAccepted: {
-                    window.requestProjectAction("import", selectedFile)
+                onAccepted: window.importMesh(selectedFile)
+            }
+
+            Dialog {
+                id: arrangeDialog
+                parent: Overlay.overlay
+                title: "Build Plate Arrangement"
+                modal: true
+                width: 390
+                standardButtons: Dialog.Cancel
+                contentItem: ColumnLayout {
+                    spacing: 10
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Pack visible objects on a rectangular bed. Orientations stay unchanged. A failed fit leaves all transforms untouched."
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: "Width (mm)"; Layout.preferredWidth: 88 }
+                        SpinBox {
+                            id: arrangementBedWidth
+                            Layout.fillWidth: true
+                            from: 50
+                            to: 1000
+                            value: window.buildPlateWidthMm
+                            editable: true
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: "Depth (mm)"; Layout.preferredWidth: 88 }
+                        SpinBox {
+                            id: arrangementBedDepth
+                            Layout.fillWidth: true
+                            from: 50
+                            to: 1000
+                            value: window.buildPlateDepthMm
+                            editable: true
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: "Spacing (mm)"; Layout.preferredWidth: 88 }
+                        SpinBox {
+                            id: arrangementSpacing
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 50
+                            value: 5
+                            editable: true
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "2 mm edge clearance. Models are packed largest-first without rotation."
+                        color: "#a8947f"
+                        font.pixelSize: 10
+                        wrapMode: Text.WordWrap
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: statusLabel.text
+                        color: "#ffb36c"
+                        font.pixelSize: 10
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button {
+                            text: "Arrange visible"
+                            Layout.fillWidth: true
+                            onClicked: {
+                                if (window.arrangeInstances(false, arrangementBedWidth.value,
+                                                           arrangementBedDepth.value, arrangementSpacing.value))
+                                    arrangeDialog.close()
+                            }
+                        }
+                        Button {
+                            text: "Center selected"
+                            Layout.fillWidth: true
+                            enabled: window.selectedInstanceIndex >= 0
+                            onClicked: {
+                                if (window.arrangeInstances(true, arrangementBedWidth.value,
+                                                           arrangementBedDepth.value, arrangementSpacing.value))
+                                    arrangeDialog.close()
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2325,6 +3247,55 @@ ApplicationWindow {
                 title: "Choose where to create the native project folder"
                 onAccepted: projectNameDialog.open()
                 onRejected: if (window.pendingProjectAction) unsavedProjectDialog.open()
+            }
+
+            Dialog {
+                id: booleanDialog
+                parent: Overlay.overlay
+                title: "Combine Meshes"
+                modal: true
+                standardButtons: Dialog.Cancel
+                contentItem: ColumnLayout {
+                    spacing: 10
+                    Label { text: "The selected object is the first input."; color: "#c8c5bd" }
+                    Label {
+                        visible: window.booleanUsesMultiSelection
+                        text: `Using all ${window.booleanOperandOptions.length + 1} selected objects in scene-list order. These inputs will be consumed on success.`
+                        color: "#62c7b3"
+                    }
+                    Label { text: "Operation" }
+                    ComboBox {
+                        id: booleanOperation
+                        Layout.fillWidth: true
+                        model: ["Union", "Difference", "Intersection"]
+                    }
+                    Label { visible: !window.booleanUsesMultiSelection; text: "Second object" }
+                    ComboBox {
+                        id: booleanOperand
+                        visible: !window.booleanUsesMultiSelection
+                        Layout.fillWidth: true
+                        textRole: "label"
+                        valueRole: "instanceIndex"
+                        model: window.booleanOperandOptions
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: window.booleanUsesMultiSelection
+                            ? "All selected objects must be closed solids. The result replaces the active object and removes the other selected inputs."
+                            : "Both objects must be closed solids. The result replaces the selected object and removes the second object."
+                        wrapMode: Text.WordWrap
+                        color: "#aaa69d"
+                    }
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Apply operation"
+                        highlighted: true
+                        onClicked: {
+                            if (window.applyBooleanOperation())
+                                booleanDialog.close()
+                        }
+                    }
+                }
             }
 
             Dialog {
@@ -2376,28 +3347,30 @@ ApplicationWindow {
             Dialog {
                 id: unsavedProjectDialog
                 parent: Overlay.overlay
-                title: "Unsaved Project Changes"
+                title: window.unsavedActionTitle()
                 modal: true
                 standardButtons: Dialog.NoButton
                 contentItem: ColumnLayout {
                     Label {
                         Layout.fillWidth: true
-                        text: "Save changes to the current native project before continuing?"
+                        text: window.unsavedActionMessage()
                         wrapMode: Text.WordWrap
                     }
                     RowLayout {
                         Layout.alignment: Qt.AlignRight
                         Button {
-                            text: "Save"
+                            text: window.projectDirectory ? "Save changes" : "Save as project"
                             onClicked: {
                                 unsavedProjectDialog.close()
                                 window.saveCurrentNativeProject()
                             }
                         }
                         Button {
-                            text: "Discard"
+                            text: window.pendingProjectAction === "close" ? "Close without saving"
+                                : (window.pendingProjectAction === "import" ? "Replace without saving" : "Open without saving")
                             onClicked: {
                                 unsavedProjectDialog.close()
+                                window.pendingProjectDiscardChanges = true
                                 if (window.pendingProjectAction === "close")
                                     window.projectDirty = false
                                 window.continuePendingProjectAction()
@@ -2405,14 +3378,11 @@ ApplicationWindow {
                         }
                         Button {
                             text: "Cancel"
-                            onClicked: {
-                                unsavedProjectDialog.close()
-                                window.pendingProjectAction = ""
-                                window.pendingProjectImportUrl = ""
-                            }
+                            onClicked: window.cancelPendingProjectAction()
                         }
                     }
                 }
+                onRejected: window.cancelPendingProjectAction()
             }
 
             FileDialog {
@@ -2566,8 +3536,8 @@ ApplicationWindow {
                 z: 20
                 anchors.left: parent.left
                 anchors.top: parent.top
-                anchors.leftMargin: 12
-                anchors.topMargin: 12
+                anchors.leftMargin: window.scenePanelVisible ? scenePanel.width + 12 : 12
+                anchors.topMargin: headerBar.height + 12
                 width: sliceBadgeRow.implicitWidth + 20
                 height: 36
                 radius: 4
@@ -2602,8 +3572,10 @@ ApplicationWindow {
             return
         // Aim at the transformed bounds center, while keeping the current
         // translation, rotation, and scale intact when the user presses Frame.
-        cameraRig.position = activeModel.mapPositionToScene(
+        const modelCenter = activeModel.mapPositionToScene(
             Qt.vector3d(0, 0, geometry.dimensions.z * 0.5))
+        cameraRig.position = Qt.vector3d(
+            modelCenter.x + window.viewportHorizontalOffset(), modelCenter.y, modelCenter.z)
         // Fit the full bounding sphere inside both viewport axes. This works
         // for small parts and tall/flat parts, independent of window aspect.
         const d = geometry.dimensions
@@ -2713,7 +3685,6 @@ ApplicationWindow {
         }
         const point = slicePlaneScenePosition()
         const pointer = screenToCameraPlane(x, y, point)
-        const baseZ = importedGeometry.center.z - importedGeometry.dimensions.z * 0.5
         const localDirection = Qt.vector3d(n.x / Math.max(Math.abs(activeModel.scale.x), 1e-8),
                                            n.y / Math.max(Math.abs(activeModel.scale.y), 1e-8),
                                            n.z / Math.max(Math.abs(activeModel.scale.z), 1e-8))
@@ -2732,20 +3703,79 @@ ApplicationWindow {
     }
 
     function importMesh(url) {
-        requestProjectAction("import", url)
+        performMeshImport(url, false)
     }
 
-    function performMeshImport(url) {
+    function performMeshImport(url, discardChanges) {
         const path = url.toString().toLowerCase()
-        window.pendingImportUrl = url.toString()
-        let loaded = false
-        if (path.endsWith(".obj")) loaded = importedGeometry.loadObj(url)
-        else if (path.endsWith(".3mf")) loaded = importedGeometry.load3mf(url)
-        else if (path.endsWith(".stl")) loaded = importedGeometry.loadStl(url)
-        else statusLabel.text = "Supported mesh files are STL, OBJ, and 3MF"
-        if (!loaded)
+        if (!path.endsWith(".obj") && !path.endsWith(".3mf") && !path.endsWith(".stl")) {
+            statusLabel.text = "Supported mesh files are STL, OBJ, and 3MF"
             return
-        statusLabel.text = `Imported ${importedGeometry.fileName} locally. Geometry commands run on this device; the source file is unchanged.`
+        }
+
+        // The first mesh uses the stable source slot. Every later import gets
+        // its own geometry object so different files can coexist in the scene.
+        const replaceScene = discardChanges
+        const useSourceSlot = replaceScene || (sceneInstances.count === 0 && !importedGeometry.loaded)
+        if (useSourceSlot) {
+            const previousProjectDirectory = projectDirectory
+            if (replaceScene)
+                projectDirectory = ""
+            pendingImportUrl = url.toString()
+            if (!loadSliceGeometry(importedGeometry, url)) {
+                projectDirectory = previousProjectDirectory
+                return
+            }
+            statusLabel.text = `Imported ${importedGeometry.fileName}. The source file remains unchanged.`
+            return
+        }
+
+        const imported = createDerivedGeometry()
+        if (!loadSliceGeometry(imported.geometry, url)) {
+            destroyDerivedGeometry(imported.key)
+            return
+        }
+        const dimensions = imported.geometry.dimensions
+        let offsetX = 0
+        const spacing = Math.max(dimensions.x, 10) + 10
+        let foundSlot = false
+        for (let attempt = 0; attempt < 256 && !foundSlot; ++attempt) {
+            foundSlot = true
+            const candidate = { minX: offsetX - dimensions.x * 0.5,
+                                maxX: offsetX + dimensions.x * 0.5,
+                                minY: -dimensions.y * 0.5, maxY: dimensions.y * 0.5 }
+            for (let index = 0; index < sceneInstances.count; ++index) {
+                if (!sceneInstances.get(index).instanceVisible)
+                    continue
+                const other = instanceWorldBounds(index)
+                if (!other)
+                    continue
+                const overlapsX = candidate.minX < other.maxX && candidate.maxX > other.minX
+                const overlapsY = candidate.minY < other.maxY && candidate.maxY > other.minY
+                if (overlapsX && overlapsY) {
+                    offsetX = other.maxX + dimensions.x * 0.5 + 10
+                    foundSlot = false
+                    break
+                }
+            }
+        }
+        if (!foundSlot) {
+            destroyDerivedGeometry(imported.key)
+            statusLabel.text = "Could not find a clear placement for the imported model. The scene was left unchanged."
+            return
+        }
+        sceneInstances.append({
+            instanceId: newSceneInstanceId(), name: imported.geometry.fileName, piece: "main",
+            geometryKey: imported.key, sourceUrl: url.toString(),
+            offsetX: offsetX, offsetY: 0, offsetZ: 0,
+            rotationX: 0, rotationY: 0, rotationZ: 0,
+            scaleX: 1, scaleY: 1, scaleZ: 1, instanceVisible: true
+        })
+        setInstanceSelected(sceneInstances.count - 1)
+        refreshMeshAnalysis()
+        markProjectDirty()
+        Qt.callLater(frameImportedModel)
+        statusLabel.text = `Added ${imported.geometry.fileName} as a separate model. ${sceneInstances.count} models are loaded.`
     }
 
     function selectedWorldDimensions() {
@@ -2854,16 +3884,29 @@ ApplicationWindow {
     function syncActiveInstance() {
         if (restoringInstanceState || selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
             return
-        sceneInstances.setProperty(selectedInstanceIndex, "offsetX", modelOffset.x)
-        sceneInstances.setProperty(selectedInstanceIndex, "offsetY", modelOffset.y)
-        sceneInstances.setProperty(selectedInstanceIndex, "offsetZ", modelOffset.z)
-        sceneInstances.setProperty(selectedInstanceIndex, "rotationX", modelRotation.x)
-        sceneInstances.setProperty(selectedInstanceIndex, "rotationY", modelRotation.y)
-        sceneInstances.setProperty(selectedInstanceIndex, "rotationZ", modelRotation.z)
-        sceneInstances.setProperty(selectedInstanceIndex, "scaleX", modelScale.x)
-        sceneInstances.setProperty(selectedInstanceIndex, "scaleY", modelScale.y)
-        sceneInstances.setProperty(selectedInstanceIndex, "scaleZ", modelScale.z)
-        sceneInstances.setProperty(selectedInstanceIndex, "instanceVisible", modelVisible)
+        const active = sceneInstances.get(selectedInstanceIndex)
+        const deltaOffset = Qt.vector3d(modelOffset.x - active.offsetX,
+                                        modelOffset.y - active.offsetY,
+                                        modelOffset.z - active.offsetZ)
+        const deltaRotation = Qt.vector3d(modelRotation.x - active.rotationX,
+                                          modelRotation.y - active.rotationY,
+                                          modelRotation.z - active.rotationZ)
+        const scaleRatio = Qt.vector3d(modelScale.x / active.scaleX,
+                                       modelScale.y / active.scaleY,
+                                       modelScale.z / active.scaleZ)
+        for (const index of selectedInstanceIndices()) {
+            const row = sceneInstances.get(index)
+            sceneInstances.setProperty(index, "offsetX", row.offsetX + deltaOffset.x)
+            sceneInstances.setProperty(index, "offsetY", row.offsetY + deltaOffset.y)
+            sceneInstances.setProperty(index, "offsetZ", row.offsetZ + deltaOffset.z)
+            sceneInstances.setProperty(index, "rotationX", row.rotationX + deltaRotation.x)
+            sceneInstances.setProperty(index, "rotationY", row.rotationY + deltaRotation.y)
+            sceneInstances.setProperty(index, "rotationZ", row.rotationZ + deltaRotation.z)
+            sceneInstances.setProperty(index, "scaleX", row.scaleX * scaleRatio.x)
+            sceneInstances.setProperty(index, "scaleY", row.scaleY * scaleRatio.y)
+            sceneInstances.setProperty(index, "scaleZ", row.scaleZ * scaleRatio.z)
+            sceneInstances.setProperty(index, "instanceVisible", modelVisible)
+        }
         if (!restoringInstanceState)
             markProjectDirty()
     }
@@ -2871,6 +3914,16 @@ ApplicationWindow {
     function setInstanceSelected(index) {
         if (index < 0 || index >= sceneInstances.count)
             return
+        selectedInstanceIds = [sceneInstances.get(index).instanceId]
+        selectionAnchorId = sceneInstances.get(index).instanceId
+        activateInstanceIndex(index)
+    }
+
+    function activateInstanceIndex(index) {
+        if (index < 0 || index >= sceneInstances.count) {
+            clearInstanceSelection()
+            return
+        }
         restoringInstanceState = true
         selectedInstanceIndex = index
         const item = sceneInstances.get(index)
@@ -2885,72 +3938,110 @@ ApplicationWindow {
     function duplicateSelectedInstance() {
         if (!importedGeometry.loaded || selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
             return
-        const source = sceneInstances.get(selectedInstanceIndex)
-        const sourceBounds = selectedWorldBounds()
-        if (!sourceBounds)
+        const sourceIndices = selectedInstanceIndices().sort((a, b) => a - b)
+        if (sourceIndices.length === 0)
             return
+        const sources = []
+        let groupBounds = { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY,
+                            maxX: Number.NEGATIVE_INFINITY, maxY: Number.NEGATIVE_INFINITY }
+        for (const index of sourceIndices) {
+            const row = sceneInstances.get(index)
+            const bounds = instanceWorldBounds(index)
+            if (!bounds) {
+                statusLabel.text = `Could not read the bounds for ${row.name}`
+                return
+            }
+            sources.push({
+                sourceIndex: index, instanceId: row.instanceId, name: row.name,
+                piece: row.piece, geometryKey: row.geometryKey, sourceUrl: row.sourceUrl,
+                offsetX: row.offsetX, offsetY: row.offsetY, offsetZ: row.offsetZ,
+                rotationX: row.rotationX, rotationY: row.rotationY, rotationZ: row.rotationZ,
+                scaleX: row.scaleX, scaleY: row.scaleY, scaleZ: row.scaleZ,
+                instanceVisible: row.instanceVisible, bounds: bounds
+            })
+            groupBounds.minX = Math.min(groupBounds.minX, bounds.minX)
+            groupBounds.minY = Math.min(groupBounds.minY, bounds.minY)
+            groupBounds.maxX = Math.max(groupBounds.maxX, bounds.maxX)
+            groupBounds.maxY = Math.max(groupBounds.maxY, bounds.maxY)
+        }
 
-        // Search to the right using transformed bounds so rotated and scaled
-        // instances do not spawn on top of existing models.
-        const spacing = Math.max(sourceBounds.maxX - sourceBounds.minX, 10) + 10
+        // Move the copied group as a unit, keeping the source group layout intact.
+        const spacing = Math.max(groupBounds.maxX - groupBounds.minX, 10) + 10
         let offsetX = spacing
         let slotFound = false
         for (let attempt = 0; attempt < 256 && !slotFound; ++attempt) {
             slotFound = true
-            const candidateMinX = sourceBounds.minX + offsetX
-            const candidateMaxX = sourceBounds.maxX + offsetX
-            for (let i = 0; i < sceneInstances.count; ++i) {
-                if (i === selectedInstanceIndex || !sceneInstances.get(i).instanceVisible)
+            for (const source of sources) {
+                if (!source.instanceVisible)
                     continue
-                const other = instanceWorldBounds(i)
-                if (!other)
-                    continue
-                const overlapsX = candidateMinX < other.maxX && candidateMaxX > other.minX
-                const overlapsY = sourceBounds.minY < other.maxY && sourceBounds.maxY > other.minY
-                if (overlapsX && overlapsY) {
-                    slotFound = false
-                    offsetX += spacing
-                    break
+                const candidateMinX = source.bounds.minX + offsetX
+                const candidateMaxX = source.bounds.maxX + offsetX
+                for (let i = 0; i < sceneInstances.count; ++i) {
+                    if (isInstanceSelected(i) || !sceneInstances.get(i).instanceVisible)
+                        continue
+                    const other = instanceWorldBounds(i)
+                    if (!other)
+                        continue
+                    const overlapsX = candidateMinX < other.maxX && candidateMaxX > other.minX
+                    const overlapsY = source.bounds.minY < other.maxY && source.bounds.maxY > other.minY
+                    if (overlapsX && overlapsY) {
+                        slotFound = false
+                        offsetX += spacing
+                        break
+                    }
                 }
+                if (!slotFound)
+                    break
             }
         }
         if (!slotFound) {
             statusLabel.text = "Could not find a clear placement for the duplicate"
             return
         }
-        sceneInstances.append({
-            instanceId: newSceneInstanceId(), name: `${source.name} copy`, piece: source.piece, geometryKey: source.geometryKey,
-            sourceUrl: source.sourceUrl,
-            offsetX: source.offsetX + offsetX, offsetY: source.offsetY, offsetZ: source.offsetZ,
-            rotationX: source.rotationX, rotationY: source.rotationY, rotationZ: source.rotationZ,
-            scaleX: source.scaleX, scaleY: source.scaleY, scaleZ: source.scaleZ,
-            instanceVisible: true
-        })
-        setInstanceSelected(sceneInstances.count - 1)
+        const copies = []
+        for (const source of sources) {
+            const instanceId = newSceneInstanceId()
+            copies.push({
+                instanceId: instanceId,
+                name: `${source.name} copy`,
+                piece: source.piece, geometryKey: source.geometryKey, sourceUrl: source.sourceUrl,
+                offsetX: source.offsetX + offsetX, offsetY: source.offsetY, offsetZ: source.offsetZ,
+                rotationX: source.rotationX, rotationY: source.rotationY, rotationZ: source.rotationZ,
+                scaleX: source.scaleX, scaleY: source.scaleY, scaleZ: source.scaleZ,
+                instanceVisible: source.instanceVisible
+            })
+        }
+        const activeSourceId = sceneInstances.get(selectedInstanceIndex).instanceId
+        const activeCopyIndex = sources.findIndex(source => source.instanceId === activeSourceId)
+        for (const copy of copies)
+            sceneInstances.append(copy)
+        selectedInstanceIds = copies.map(copy => copy.instanceId)
+        const activeIndex = sceneInstances.count - copies.length + Math.max(0, activeCopyIndex)
+        selectionAnchorId = copies[0].instanceId
+        activateInstanceIndex(activeIndex)
         markProjectDirty()
-        statusLabel.text = "Duplicated mesh instance"
+        statusLabel.text = copies.length > 1
+            ? `Duplicated ${copies.length} objects as a group; relative positions were preserved.`
+            : "Duplicated mesh instance"
     }
 
     function removeSelectedInstance() {
         if (selectedInstanceIndex < 0 || selectedInstanceIndex >= sceneInstances.count)
             return
-        const removedIndex = selectedInstanceIndex
-        const removedGeometryKey = sceneInstances.get(removedIndex).geometryKey
-        sceneInstances.remove(removedIndex)
-        let pieceStillUsed = false
-        for (let i = 0; i < sceneInstances.count; ++i) {
-            if (sceneInstances.get(i).geometryKey === removedGeometryKey) {
-                pieceStillUsed = true
-                break
-            }
+        const removedIndices = selectedInstanceIndices().sort((a, b) => b - a)
+        const removedCount = removedIndices.length
+        const nextIndex = Math.min(removedIndices[removedIndices.length - 1], sceneInstances.count - removedCount)
+        const removedGeometryKeys = []
+        for (const index of removedIndices) {
+            const key = sceneInstances.get(index).geometryKey
+            if (removedGeometryKeys.indexOf(key) < 0)
+                removedGeometryKeys.push(key)
+            sceneInstances.remove(index)
         }
-        if (!pieceStillUsed) {
-            if (removedGeometryKey !== "source")
-                destroyDerivedGeometry(removedGeometryKey)
-        }
+        for (const key of removedGeometryKeys)
+            releaseUnreferencedDerivedGeometry(key)
         if (sceneInstances.count === 0) {
-            selectedInstanceIndex = -1
-            modelSelected = false
+            clearInstanceSelection()
             modelVisible = true
             for (const key of Object.keys(derivedGeometries))
                 destroyDerivedGeometry(key)
@@ -2959,9 +4050,9 @@ ApplicationWindow {
             statusLabel.text = "Scene is empty"
             return
         }
-        setInstanceSelected(Math.min(removedIndex, sceneInstances.count - 1))
+        setInstanceSelected(Math.max(0, Math.min(nextIndex, sceneInstances.count - 1)))
         markProjectDirty()
-        statusLabel.text = "Removed mesh instance"
+        statusLabel.text = removedCount > 1 ? `Removed ${removedCount} mesh instances` : "Removed mesh instance"
     }
 
     function mirrorModel(axis) {
@@ -2987,8 +4078,8 @@ ApplicationWindow {
         if (importedGeometry.loaded)
             frameImportedModel()
         else {
-            cameraRig.position = Qt.vector3d(0, 0, 0)
-            camera.position = Qt.vector3d(0, 0, 520)
+            cameraRig.position = Qt.vector3d(window.viewportHorizontalOffset(), 0, 0)
+            camera.position = Qt.vector3d(0, 0, 180)
         }
     }
 
@@ -3003,8 +4094,8 @@ ApplicationWindow {
         if (importedGeometry.loaded)
             frameImportedModel()
         else {
-            cameraRig.position = Qt.vector3d(0, 0, 0)
-            camera.position = Qt.vector3d(0, 0, 520)
+            cameraRig.position = Qt.vector3d(window.viewportHorizontalOffset(), 0, 0)
+            camera.position = Qt.vector3d(0, 0, 180)
         }
     }
 
@@ -3129,6 +4220,11 @@ ApplicationWindow {
         sequence: "Ctrl+D"
         context: Qt.WindowShortcut
         onActivated: duplicateSelectedInstance()
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+A"
+        context: Qt.WindowShortcut
+        onActivated: selectAllInstances()
     }
     Shortcut {
         sequence: "Delete"
